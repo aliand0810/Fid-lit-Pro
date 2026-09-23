@@ -219,6 +219,7 @@
             <div id="lty-detail-view">
                 <div id="lty-detail-top"></div>
                 <div id="lty-detail-scroll">
+                    <div id="lty-panel-stats" class="lty-panel"></div>
                     <div id="lty-panel-apercu" class="lty-panel"></div>
                     <div id="lty-panel-credit" class="lty-panel"></div>
                     <div id="lty-panel-echel" class="lty-panel"></div>
@@ -938,8 +939,8 @@ function renderCockpit(c){
         +tileHtml('💰', (c.totalSpent||0).toFixed(0)+'€', 'Dépensé', '#0f766e')
         +'</div>'
         +'<div id="lty-det-tabs">'
-        +  ['apercu','credit','echel','hist'].map(function(k){
-             var labels={apercu:'📝 Aperçu',credit:'📒 Compte crédit',echel:'📅 Échéancier',hist:'🧾 Historique'};
+        +  ['stats','apercu','credit','echel','hist'].map(function(k){
+             var labels={stats:'📊 Statistiques',apercu:'📝 Aperçu',credit:'📒 Compte crédit',echel:'📅 Échéancier',hist:'🧾 Historique'};
              return '<button class="lty-det-tab'+(STATE.detTab===k?' active':'')+'" onclick="ltyShowDetTab(\''+k+'\')">'+labels[k]+'</button>';
            }).join('')
         +'</div>';
@@ -951,14 +952,14 @@ window.ltyShowDetTab = function(k){
     document.querySelectorAll('.lty-det-tab').forEach(function(b,i){});
     var top = document.getElementById('lty-detail-top');
     if (top) top.querySelectorAll('.lty-det-tab').forEach(function(b){ b.classList.remove('active'); });
-    var idx = ['apercu','credit','echel','hist'].indexOf(k);
+    var idx = ['stats','apercu','credit','echel','hist'].indexOf(k);
     if (top && top.querySelectorAll('.lty-det-tab')[idx]) top.querySelectorAll('.lty-det-tab')[idx].classList.add('active');
     document.querySelectorAll('.lty-panel').forEach(function(p){ p.classList.remove('active'); });
     var panel = document.getElementById('lty-panel-'+k); if (panel) panel.classList.add('active');
 };
 
 /* ════════════════════════════════════════════════════════════
-   SÉLECTION CLIENT + RENDU DES 4 ONGLETS
+   SÉLECTION CLIENT + RENDU DES 5 ONGLETS
    ════════════════════════════════════════════════════════════ */
 window.ltySelectClient = function(id, silent){
     STATE.detailId = id;
@@ -967,12 +968,110 @@ window.ltySelectClient = function(id, silent){
     document.getElementById('lty-detail-empty').style.display = 'none';
     document.getElementById('lty-detail-view').style.display = 'flex';
     renderCockpit(c);
+    renderStatsTab(c);
     renderApercuTab(c);
     renderCreditTab(c);
     renderEchelTab(c);
     renderHistTab(c);
-    ltyShowDetTab(STATE.detTab||'apercu');
+    ltyShowDetTab(STATE.detTab||'stats');
 };
+
+/* ── Format quantité (kg vs unité), même convention que le reste de l'app ── */
+function _ltyQtyLabel(qty, unitType){
+    var q = parseFloat(qty)||0;
+    return unitType==='kg' ? (+q.toFixed(3))+' kg' : ('×'+Math.round(q));
+}
+
+/* ── Onglet Statistiques : derniers achats, montant réglé/restant, produit favori ── */
+function renderStatsTab(c){
+    var el = document.getElementById('lty-panel-stats'); if(!el) return;
+
+    // Achats réels (avec détail des articles) — alimentés par COVO Pro à chaque vente liée à ce
+    // client fidélité (type 'credit' = achat qui a rapporté des points, avec son tableau `items`).
+    var achats = (c.history||[]).filter(function(h){ return h.type==='credit' && h.items && h.items.length; });
+
+    // Montant déjà réglé (cumul de tous les règlements historiques, compte crédit + échéancier)
+    // vs montant restant à payer MAINTENANT (dette crédit en cours + échéances non soldées) —
+    // une vision unifiée que ni l'onglet Crédit ni l'onglet Échéancier ne donnent seuls.
+    var totalRegle = (c.history||[]).filter(function(h){ return h.type==='credit_repay' || h.type==='echel_repay'; })
+        .reduce(function(s,h){ return s+(parseFloat(h.amount)||0); }, 0);
+    var echReste = 0;
+    (c.echeances||[]).forEach(function(p){ (p.items||[]).forEach(function(x){ if(!x.paid) echReste += (parseFloat(x.amount)||0); }); });
+    var resteAPayer = +((creditOf(c)||0) + echReste).toFixed(2);
+    totalRegle = +totalRegle.toFixed(2);
+
+    // Produits les plus consommés — cumul des quantités par article sur l'ensemble des achats.
+    var prodMap = {};
+    achats.forEach(function(h){
+        (h.items||[]).forEach(function(it){
+            var key = (it.name||'?').trim() || '?';
+            if (!prodMap[key]) prodMap[key] = { name:key, qty:0, montant:0, unitType:it.unitType||'unit' };
+            prodMap[key].qty += (parseFloat(it.quantity)||0);
+            prodMap[key].montant += (parseFloat(it.quantity)||0)*(parseFloat(it.price)||0);
+        });
+    });
+    var prodList = Object.keys(prodMap).map(function(k){ return prodMap[k]; }).sort(function(a,b){ return b.qty-a.qty; });
+    var topProduct = prodList[0]||null;
+    var maxQty = topProduct ? topProduct.qty : 0;
+
+    var html = '';
+
+    // KPI tiles
+    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">'
+        + tileHtml('🧾', achats.length, 'Achats enregistrés', '#1e40af')
+        + tileHtml('💚', totalRegle.toFixed(2)+'€', 'Déjà réglé', '#059669')
+        + tileHtml('⏳', resteAPayer.toFixed(2)+'€', 'Reste à payer', resteAPayer>0?'#dc2626':'#059669')
+        + '<div class="lty-tile"><div class="l">🏆 Produit favori</div>'
+        +   (topProduct
+                ? ('<div class="v" style="color:#7c3aed;font-size:.86rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="'+esc(topProduct.name)+'">'+esc(topProduct.name)+'</div>'
+                    + '<div style="font-size:.62rem;color:var(--text-muted);margin-top:2px;">'+_ltyQtyLabel(topProduct.qty, topProduct.unitType)+' au total</div>')
+                : '<div class="v" style="color:var(--text-muted);font-size:.86rem;">—</div>')
+        + '</div>'
+        + '</div>';
+
+    // Top produits (classement)
+    html += '<div class="lty-card">'
+        + '<div class="lty-lbl" style="margin-bottom:8px;">🏆 Produits les plus achetés</div>';
+    if (!prodList.length){
+        html += '<div style="font-size:.8rem;color:var(--text-muted);">Aucun achat enregistré pour ce client.</div>';
+    } else {
+        html += prodList.slice(0,5).map(function(p, i){
+            var pct = maxQty>0 ? Math.max(6, Math.round((p.qty/maxQty)*100)) : 0;
+            var barColor = i===0 ? 'linear-gradient(90deg,#8b5cf6,#6d28d9)' : 'linear-gradient(90deg,#c4b5fd,#a78bfa)';
+            return '<div style="margin-bottom:9px;">'
+                + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:3px;">'
+                +   '<span style="font-size:.8rem;font-weight:'+(i===0?'900':'700')+';color:var(--text-main);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(i===0?'🥇 ':'')+esc(p.name)+'</span>'
+                +   '<span style="font-size:.72rem;color:var(--text-muted);white-space:nowrap;flex-shrink:0;">'+_ltyQtyLabel(p.qty,p.unitType)+' · '+p.montant.toFixed(2)+'€</span>'
+                + '</div>'
+                + '<div style="height:7px;border-radius:4px;background:var(--bg-body);overflow:hidden;"><div style="height:100%;width:'+pct+'%;border-radius:4px;background:'+barColor+';"></div></div>'
+                + '</div>';
+        }).join('');
+    }
+    html += '</div>';
+
+    // Derniers achats
+    html += '<div class="lty-card">'
+        + '<div class="lty-lbl" style="margin-bottom:8px;">🧾 Derniers achats</div>';
+    if (!achats.length){
+        html += '<div style="font-size:.8rem;color:var(--text-muted);">Aucun achat enregistré pour ce client.</div>';
+    } else {
+        html += achats.slice(0,6).map(function(h){
+            var itemsLine = (h.items||[]).slice(0,5).map(function(it){ return esc(it.name)+' '+_ltyQtyLabel(it.quantity,it.unitType); }).join(' · ') + ((h.items||[]).length>5 ? '…' : '');
+            var tkt = (h.saleId||h.ticketNum) ? ('🧾 #'+esc(String(h.ticketNum||h.saleId))+' · ') : '';
+            return '<div style="padding:8px 0;border-top:1px dashed var(--border-color);">'
+                + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">'
+                +   '<span style="font-size:.78rem;color:var(--text-muted);">'+tkt+fmtDT(h.date)+'</span>'
+                +   '<span style="font-weight:900;color:#1e40af;font-size:.88rem;white-space:nowrap;">'+(+(h.amount||0)).toFixed(2)+'€</span>'
+                + '</div>'
+                + '<div style="font-size:.74rem;color:var(--text-main);margin-top:3px;">'+itemsLine+'</div>'
+                + '</div>';
+        }).join('');
+        if (achats.length>6) html += '<div style="text-align:center;font-size:.7rem;color:var(--text-muted);padding-top:6px;">… '+(achats.length-6)+' achat(s) plus ancien(s) — voir l\'onglet 🧾 Historique</div>';
+    }
+    html += '</div>';
+
+    el.innerHTML = html;
+}
 
 /* ── Onglet Aperçu : note + réservations ── */
 function renderApercuTab(c){
