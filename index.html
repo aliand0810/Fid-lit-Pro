@@ -829,7 +829,7 @@ window._fpLg = lg; window._fpLs = ls;
 /* ════════════════════════════════════════════════════════════
    ÉTAT
    ════════════════════════════════════════════════════════════ */
-var STATE = { detailId:null, detTab:'apercu' };
+var STATE = { detailId:null, detTab:'stats' };
 
 /* ════════════════════════════════════════════════════════════
    KPI + LISTE CLIENTS
@@ -962,11 +962,16 @@ window.ltyShowDetTab = function(k){
    SÉLECTION CLIENT + RENDU DES 5 ONGLETS
    ════════════════════════════════════════════════════════════ */
 window.ltySelectClient = function(id, silent){
+    // Un clic sur un NOUVEAU client (pas un simple rafraîchissement silencieux du client déjà
+    // ouvert, cf. refreshAll()) ramène toujours sur l'onglet Statistiques par défaut, même si un
+    // autre onglet était resté actif pour le client précédent.
+    var isNewClient = (STATE.detailId !== id);
     STATE.detailId = id;
     document.querySelectorAll('.lty-row').forEach(function(r){ r.classList.toggle('active', r.getAttribute('data-id')===id); });
     var c = find(id); if(!c) return;
     document.getElementById('lty-detail-empty').style.display = 'none';
     document.getElementById('lty-detail-view').style.display = 'flex';
+    if (!silent && isNewClient) STATE.detTab = 'stats';
     renderCockpit(c);
     renderStatsTab(c);
     renderApercuTab(c);
