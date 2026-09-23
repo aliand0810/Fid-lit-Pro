@@ -329,6 +329,23 @@
   </div>
 </div>
 
+<!-- ══════════════ MODALE DÉTAIL TICKET DE CAISSE ══════════════ -->
+<div class="lty-modal" id="lty-ticket-modal">
+  <div class="lty-box">
+    <div class="lty-box-head" style="background:linear-gradient(135deg,#1e40af,#1e3a8a);">
+      <div>
+        <div style="font-size:1rem;font-weight:900;">🧾 Ticket <span id="lty-ticket-modal-num">#—</span></div>
+        <div style="font-size:.74rem;opacity:.85;margin-top:2px;" id="lty-ticket-modal-client">client</div>
+      </div>
+      <button onclick="ltyCloseTicketDetail()">✕</button>
+    </div>
+    <div class="lty-box-body" id="lty-ticket-modal-body"></div>
+    <div class="lty-box-foot">
+      <button class="lty-btn secondary" style="flex:1;" onclick="ltyCloseTicketDetail()">Fermer</button>
+    </div>
+  </div>
+</div>
+
 <!-- ══════════════ MODALE WHATSAPP / SMS ══════════════ -->
 <div class="lty-modal" id="wa-modal">
   <div class="lty-box">
@@ -993,7 +1010,11 @@ function renderStatsTab(c){
 
     // Achats réels (avec détail des articles) — alimentés par COVO Pro à chaque vente liée à ce
     // client fidélité (type 'credit' = achat qui a rapporté des points, avec son tableau `items`).
-    var achats = (c.history||[]).filter(function(h){ return h.type==='credit' && h.items && h.items.length; });
+    // On conserve l'index d'origine dans c.history (idx) pour permettre le clic → détail du ticket,
+    // y compris pour un client qui n'a qu'un seul achat (premier achat) : aucun seuil minimal ici,
+    // le regroupement et le classement des produits se recalculent correctement dès 1 achat.
+    var achats = [];
+    (c.history||[]).forEach(function(h, idx){ if (h.type==='credit' && h.items && h.items.length) achats.push({ h:h, idx:idx }); });
 
     // Montant déjà réglé (cumul de tous les règlements historiques, compte crédit + échéancier)
     // vs montant restant à payer MAINTENANT (dette crédit en cours + échéances non soldées) —
@@ -1006,9 +1027,13 @@ function renderStatsTab(c){
     totalRegle = +totalRegle.toFixed(2);
 
     // Produits les plus consommés — cumul des quantités par article sur l'ensemble des achats.
+    // Regroupement 100% automatique par nom d'article, sans seuil minimal : un article acheté une
+    // seule fois apparaît dans le classement avec sa quantité réelle (ex. ×1), au même titre que les
+    // articles achetés plusieurs fois — c'est juste qu'il se retrouve mécaniquement plus bas si
+    // d'autres articles ont une quantité cumulée supérieure.
     var prodMap = {};
-    achats.forEach(function(h){
-        (h.items||[]).forEach(function(it){
+    achats.forEach(function(a){
+        (a.h.items||[]).forEach(function(it){
             var key = (it.name||'?').trim() || '?';
             if (!prodMap[key]) prodMap[key] = { name:key, qty:0, montant:0, unitType:it.unitType||'unit' };
             prodMap[key].qty += (parseFloat(it.quantity)||0);
@@ -1060,10 +1085,11 @@ function renderStatsTab(c){
     if (!achats.length){
         html += '<div style="font-size:.8rem;color:var(--text-muted);">Aucun achat enregistré pour ce client.</div>';
     } else {
-        html += achats.slice(0,6).map(function(h){
+        html += achats.slice(0,6).map(function(a){
+            var h = a.h;
             var itemsLine = (h.items||[]).slice(0,5).map(function(it){ return esc(it.name)+' '+_ltyQtyLabel(it.quantity,it.unitType); }).join(' · ') + ((h.items||[]).length>5 ? '…' : '');
             var tkt = (h.saleId||h.ticketNum) ? ('🧾 #'+esc(String(h.ticketNum||h.saleId))+' · ') : '';
-            return '<div style="padding:8px 0;border-top:1px dashed var(--border-color);">'
+            return '<div style="padding:8px 0;border-top:1px dashed var(--border-color);cursor:pointer;" onclick="ltyOpenTicketDetail(\''+esc(c.id)+'\','+a.idx+')" title="Voir le détail du ticket">'
                 + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">'
                 +   '<span style="font-size:.78rem;color:var(--text-muted);">'+tkt+fmtDT(h.date)+'</span>'
                 +   '<span style="font-weight:900;color:#1e40af;font-size:.88rem;white-space:nowrap;">'+(+(h.amount||0)).toFixed(2)+'€</span>'
@@ -1341,18 +1367,73 @@ function renderHistTab(c){
     var hist = c.history||[];
     if (!hist.length){ el.innerHTML = '<div class="lty-card"><div style="font-size:.82rem;color:var(--text-muted);">Aucun historique.</div></div>'; return; }
     var html = '<div class="lty-card"><table class="lty-table"><thead><tr><th>Date</th><th>Opération</th><th style="text-align:right;">Montant</th></tr></thead><tbody>';
-    hist.slice(0,200).forEach(function(h){
+    // hist.slice(0,200) conserve les index d'origine (slice démarre à 0) — indispensable pour que
+    // idx pointe bien sur la bonne entrée de c.history au clic (ltyOpenTicketDetail).
+    hist.slice(0,200).forEach(function(h, idx){
         var pts = h.points ? ('<br><span style="font-size:.62rem;color:'+(h.points>0?'#059669':'#dc2626')+';">'+(h.points>0?'+':'')+h.points+' pts</span>') : '';
-        var tkt = (h.saleId||h.ticketNum) ? ('<br><span style="font-size:.62rem;color:var(--text-muted);">🧾 #'+esc(String(h.ticketNum||h.saleId))+'</span>') : '';
-        var items = (h.items&&h.items.length) ? ('<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">'+h.items.slice(0,4).map(function(it){ return esc(it.name)+' ×'+it.quantity; }).join(', ')+(h.items.length>4?'…':'')+'</div>') : '';
-        return html += '<tr><td style="white-space:nowrap;color:var(--text-muted);">'+fmtDT(h.date)+tkt+'</td>'
-            + '<td>'+histLabel(h.type)+(h.method?(' <span style="font-size:.64rem;color:var(--text-muted);">'+methLabel(h.method)+'</span>'):'')+items+'</td>'
+        var hasDetail = !!(h.items && h.items.length);
+        var tktNum = h.ticketNum || h.saleId;
+        var tkt = tktNum ? ('<br><span style="font-size:.66rem;color:'+(hasDetail?'#1e40af':'var(--text-muted)')+';font-weight:'+(hasDetail?'800':'600')+';">🧾 Ticket #'+esc(String(tktNum))+'</span>') : '';
+        var items = hasDetail ? ('<div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">'+h.items.slice(0,4).map(function(it){ return esc(it.name)+' '+_ltyQtyLabel(it.quantity,it.unitType); }).join(', ')+(h.items.length>4?' · +'+(h.items.length-4)+' autre(s)':'')+'</div>') : '';
+        // Ligne cliquable dès qu'un numéro de ticket existe (même sans détail d'articles, pour les
+        // mouvements plus anciens) — ouvre la modale de détail complet du ticket.
+        var clickable = !!tktNum;
+        var rowAttrs = clickable ? (' onclick="ltyOpenTicketDetail(\''+esc(c.id)+'\','+idx+')" style="cursor:pointer;" title="Voir le détail du ticket"') : '';
+        var seeMore = clickable ? '<div style="font-size:.64rem;color:#7c3aed;font-weight:700;margin-top:3px;">🔍 Voir le détail du ticket</div>' : '';
+        html += '<tr'+rowAttrs+'><td style="white-space:nowrap;color:var(--text-muted);">'+fmtDT(h.date)+tkt+'</td>'
+            + '<td>'+histLabel(h.type)+(h.method?(' <span style="font-size:.64rem;color:var(--text-muted);">'+methLabel(h.method)+'</span>'):'')+items+seeMore+'</td>'
             + '<td style="text-align:right;font-weight:800;color:#1e40af;white-space:nowrap;">'+(+(h.amount||0)).toFixed(2)+'€'+pts+'</td></tr>';
     });
     if (hist.length>200) html += '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);font-size:.7rem;">… '+(hist.length-200)+' mouvement(s) plus ancien(s)</td></tr>';
     html += '</tbody></table></div>';
     el.innerHTML = html;
 }
+
+// ── Détail complet d'un ticket de caisse lié à un client (accessible depuis l'onglet Historique
+// ET depuis "Derniers achats" de l'onglet Statistiques) : numéro de ticket, date, vendeur, mode de
+// règlement, liste intégrale des articles achetés (jamais tronquée ici, contrairement aux aperçus
+// compacts des listes), et montant total. `idx` est l'index de l'entrée dans c.history.
+window.ltyOpenTicketDetail = function(customerId, idx){
+    var d = lg();
+    var c = d.customers.find(function(x){ return x.id===customerId; });
+    if (!c || !c.history || !c.history[idx]) { toast('Mouvement introuvable'); return; }
+    var h = c.history[idx];
+    var tktNum = h.ticketNum || h.saleId;
+    document.getElementById('lty-ticket-modal-num').textContent = tktNum ? ('#'+String(tktNum)) : '—';
+    document.getElementById('lty-ticket-modal-client').textContent = c.name;
+
+    var meta = '<div style="display:flex;flex-wrap:wrap;gap:12px 18px;font-size:.78rem;color:var(--text-muted);margin-bottom:12px;padding-bottom:10px;border-bottom:1px dashed var(--border-color);">'
+        + '<div>📅 '+fmtDT(h.date)+'</div>'
+        + (h.cashier ? ('<div>👤 '+esc(h.cashier)+'</div>') : '')
+        + (h.method ? ('<div>'+methLabel(h.method)+'</div>') : '')
+        + '<div>'+histLabel(h.type)+'</div>'
+        + '</div>';
+
+    var itemsHtml;
+    if (h.items && h.items.length){
+        itemsHtml = '<div style="overflow-x:auto;"><table class="lty-table"><thead><tr><th>Article</th><th style="text-align:center;">Qté</th><th style="text-align:right;">P.U.</th><th style="text-align:right;">Total</th></tr></thead><tbody>'
+            + h.items.map(function(it){
+                var ligneTotal = it.total!=null ? (+it.total) : ((parseFloat(it.quantity)||0)*(parseFloat(it.price)||0));
+                return '<tr><td>'+esc(it.name)+'</td>'
+                    + '<td style="text-align:center;white-space:nowrap;">'+_ltyQtyLabel(it.quantity,it.unitType)+'</td>'
+                    + '<td style="text-align:right;white-space:nowrap;">'+(+(it.price||0)).toFixed(2)+'€</td>'
+                    + '<td style="text-align:right;font-weight:800;white-space:nowrap;">'+ligneTotal.toFixed(2)+'€</td></tr>';
+            }).join('')
+            + '</tbody></table></div>';
+    } else {
+        itemsHtml = '<div style="font-size:.8rem;color:var(--text-muted);">Détail des articles non disponible pour ce mouvement (ticket antérieur à l\'activation du suivi détaillé, ou mouvement sans articles — règlement, ajustement…).</div>';
+    }
+
+    var pts = h.points ? ('<div style="margin-top:8px;font-size:.76rem;font-weight:700;color:'+(h.points>0?'#059669':'#dc2626')+';">'+(h.points>0?'+':'')+h.points+' points fidélité</div>') : '';
+
+    document.getElementById('lty-ticket-modal-body').innerHTML = meta + itemsHtml
+        + '<div style="display:flex;justify-content:flex-end;margin-top:12px;padding-top:10px;border-top:1.5px solid var(--border-color);">'
+        +   '<div style="text-align:right;"><div style="font-size:.68rem;color:var(--text-muted);">Montant</div><div style="font-size:1.25rem;font-weight:900;color:#1e40af;">'+(+(h.amount||0)).toFixed(2)+'€</div></div>'
+        + '</div>' + pts;
+
+    document.getElementById('lty-ticket-modal').classList.add('open');
+};
+window.ltyCloseTicketDetail = function(){ document.getElementById('lty-ticket-modal').classList.remove('open'); };
 
 /* ════════════════════════════════════════════════════════════
    MODALE CLIENT (ajout / édition)
