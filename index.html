@@ -140,6 +140,7 @@
         #lty-list-inner{max-height:320px;}
     }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
 </head>
 <body>
 
@@ -1532,23 +1533,15 @@ window.ltyManualAdjustPoints = function(){
     refreshAll();
 };
 
-/* ── Carte fidélité (aperçu / impression) ── */
-function drawBarcodeCanvas(canvas, code){
-    if (!canvas) return;
-    var ctx = canvas.getContext('2d');
-    var w = canvas.width, h = canvas.height;
-    ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,w,h);
-    ctx.fillStyle = '#1e293b';
-    var x = 6, maxX = w-6;
-    for (var i=0;i<code.length && x<maxX;i++){
-        var code_ = code.charCodeAt(i);
-        var barW = 2 + (code_ % 3);
-        if (code_ % 2 === 0){ ctx.fillRect(x, 4, barW, h-16); }
-        x += barW + 2;
-    }
-    ctx.fillStyle = '#1e293b'; ctx.font = '11px monospace'; ctx.textAlign='center';
-    ctx.fillText(code, w/2, h-4);
-}
+/* ── Carte fidélité (aperçu / impression) ──
+   Ancienne version : fausses barres dessinées sur un <canvas> à partir du code
+   caractère par caractère (une barre uniquement si charCodeAt(i) était pair,
+   sinon rien — un code-barres n'a donc jamais représenté le vrai code, illisible
+   à la scannette ET visuellement cassé, cf. capture montrant seulement 2-3 barres
+   pour un code de 14 caractères). Remplacé par un vrai code-barres CODE128 généré
+   par JsBarcode (même bibliothèque/format que le reste de la suite COVO Pro —
+   voir covo_pro_v28_credit.html) sur un <svg>, donc à la fois correct visuellement
+   et réellement scannable en caisse. */
 window.ltyOpenCardModal = function(id){
     var c = find(id); if(!c) return;
     var code = c.barcode || genBarcode(c.name,c.phone,lg().customers,c.id);
@@ -1557,12 +1550,23 @@ window.ltyOpenCardModal = function(id){
         + '<div style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);border-radius:10px;padding:10px 14px;margin-bottom:14px;color:#fff;">'
         + '<div style="font-size:.7rem;font-weight:800;letter-spacing:1px;text-transform:uppercase;opacity:.85;margin-bottom:4px;">🎁 Carte Fidélité</div>'
         + '<div style="font-size:1.15rem;font-weight:900;">'+esc(c.name)+'</div></div>'
-        + '<canvas id="lty-card-canvas" width="300" height="90" style="width:100%;max-width:300px;"></canvas>'
-        + '<div style="font-family:monospace;font-size:.7rem;color:#7c3aed;margin-top:6px;font-weight:700;">'+esc(code)+'</div>'
+        + '<div style="width:100%;max-width:300px;margin:0 auto;text-align:center;"><svg id="lty-card-barcode-svg" style="width:100%;height:auto;max-height:90px;"></svg></div>'
+        + '<div style="font-family:monospace;font-size:.7rem;color:#7c3aed;margin-top:6px;font-weight:700;text-align:center;">'+esc(code)+'</div>'
         + '<div style="font-size:.62rem;color:#94a3b8;margin-top:10px;">Présentez cette carte à chaque achat pour cumuler vos points</div>'
         + '</div>';
     document.getElementById('lty-card-modal').classList.add('open');
-    setTimeout(function(){ drawBarcodeCanvas(document.getElementById('lty-card-canvas'), code); }, 30);
+    setTimeout(function(){
+        var svg = document.getElementById('lty-card-barcode-svg');
+        if (!svg) return;
+        try {
+            JsBarcode(svg, code, {
+                format: 'CODE128', lineColor: '#1e293b', width: 2.2, height: 72,
+                displayValue: false, margin: 0, background: 'transparent'
+            });
+        } catch (e) {
+            svg.innerHTML = '<text x="10" y="40" fill="#e74c3c" font-size="12">Erreur génération du code-barres</text>';
+        }
+    }, 30);
 };
 window.ltyPrintCard = function(){ if (_editId) ltyOpenCardModal(_editId); else toast('Enregistrez le client d\'abord'); };
 window.ltyDoPrintCard = function(){
@@ -1572,7 +1576,7 @@ window.ltyDoPrintCard = function(){
     if (!win) return;
     win.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Carte Fidélité</title>'
         + '<style>body{margin:0;font-family:Arial,sans-serif;background:#fff;display:flex;justify-content:center;align-items:center;min-height:100vh;}'
-        + '.wrap{width:320px;} img,canvas{max-width:100%;}</style></head><body><div class="wrap">'+content.innerHTML+'</div>'
+        + '.wrap{width:320px;} img,canvas,svg{max-width:100%;}</style></head><body><div class="wrap">'+content.innerHTML+'</div>'
         + '<script>window.onload=function(){window.print();}<\/script></body></html>');
     win.document.close();
 };
