@@ -1550,7 +1550,7 @@ window.ltyOpenCardModal = function(id){
         + '<div style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);border-radius:10px;padding:10px 14px;margin-bottom:14px;color:#fff;">'
         + '<div style="font-size:.7rem;font-weight:800;letter-spacing:1px;text-transform:uppercase;opacity:.85;margin-bottom:4px;">🎁 Carte Fidélité</div>'
         + '<div style="font-size:1.15rem;font-weight:900;">'+esc(c.name)+'</div></div>'
-        + '<div style="width:100%;max-width:300px;margin:0 auto;text-align:center;"><svg id="lty-card-barcode-svg" style="width:100%;height:auto;max-height:90px;"></svg></div>'
+        + '<div style="width:100%;max-width:300px;margin:0 auto;text-align:center;"><svg id="lty-card-barcode-svg" style="width:100%;height:auto;display:block;"></svg></div>'
         + '<div style="font-family:monospace;font-size:.7rem;color:#7c3aed;margin-top:6px;font-weight:700;text-align:center;">'+esc(code)+'</div>'
         + '<div style="font-size:.62rem;color:#94a3b8;margin-top:10px;">Présentez cette carte à chaque achat pour cumuler vos points</div>'
         + '</div>';
@@ -1563,6 +1563,19 @@ window.ltyOpenCardModal = function(id){
                 format: 'CODE128', lineColor: '#1e293b', width: 2.2, height: 72,
                 displayValue: false, margin: 0, background: 'transparent'
             });
+            /* JsBarcode fixe des attributs width/height en pixels mais ne pose
+               PAS de viewBox — sans lui, le CSS responsive (width:100%;height:auto)
+               ne met pas le dessin à l'échelle : il le ROGNE si le code (large,
+               ex. 14 caractères ≈ 380px) dépasse le conteneur (300px max). On
+               calcule donc la vraie taille dessinée et on pose un viewBox dessus,
+               ce qui permet au CSS de réduire proportionnellement sans jamais
+               couper le code-barres, quelle que soit la largeur disponible. */
+            var bbox = svg.getBBox();
+            if (bbox && bbox.width > 0 && bbox.height > 0) {
+                svg.setAttribute('viewBox', '0 0 ' + bbox.width + ' ' + bbox.height);
+                svg.removeAttribute('width');
+                svg.removeAttribute('height');
+            }
         } catch (e) {
             svg.innerHTML = '<text x="10" y="40" fill="#e74c3c" font-size="12">Erreur génération du code-barres</text>';
         }
