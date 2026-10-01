@@ -141,6 +141,10 @@
     }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+<!-- Portail client (voir GUIDE_PORTAIL_FIDELITE.md) : SDK Firebase, chargé même sans configuration — _fbInit() se contente de ne rien faire tant que FB_CONFIG n'est pas renseigné. -->
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 </head>
 <body>
 
@@ -950,6 +954,7 @@ function renderCockpit(c){
         +'<button onclick="ltyOpenClientModal(\''+esc(c.id)+'\')" style="background:rgba(245,158,11,.12);color:#d97706;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">✏️ Modifier</button>'
         +'<button onclick="ltyOpenCardModal(\''+esc(c.id)+'\')" style="background:rgba(139,92,246,.12);color:#7c3aed;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">🖨️ Carte</button>'
         +'<button onclick="window.ltySendBalanceWhatsApp(\''+esc(c.id)+'\')" style="background:rgba(5,150,105,.12);color:#059669;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">💰 Envoyer solde</button>'
+        +'<button onclick="window.ltyResendPortalAccess(\''+esc(c.id)+'\')" title="Créer ou renvoyer l\'accès à l\'espace client en ligne" style="background:rgba(37,99,235,.12);color:#2563eb;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">🔗 '+(c.portalUid?'Renvoyer accès':'Créer accès')+'</button>'
         +'</div>'
         +'</div>'
         +'<div style="display:flex;gap:8px;margin-top:13px;flex-wrap:wrap;">'
@@ -1030,6 +1035,11 @@ window.ltySelectClient = function(id, silent){
     document.getElementById('lty-detail-view').style.display = 'flex';
     if (!silent && isNewClient) STATE.detTab = 'stats';
     renderCockpit(c);
+    // Portail client (Firebase) — une fiche ouverte = un code client "saisi" : créer son
+    // accès portail s'il n'existe pas encore, sinon simplement resynchroniser ses données.
+    // Seulement sur une VRAIE consultation (pas les rafraîchissements silencieux internes,
+    // pour ne pas écrire sur Firebase à chaque frappe/mise à jour locale).
+    if (isNewClient && !silent && typeof window._fbSyncClientPortal === 'function') window._fbSyncClientPortal(id);
     renderStatsTab(c);
     renderApercuTab(c);
     renderCreditTab(c);
@@ -1542,10 +1552,14 @@ window.ltySaveClientModal = function(){
         if (spendCap>0){ newC.spendCap=spendCap; newC.spendCapPeriod=spendCapPeriod; }
         d.customers.push(newC);
     }
+    var _savedClientId = _editId || newId;
     ls(d);
     ltyCloseClientModal();
     toast('✅ Client enregistré','success');
     refreshAll();
+    // Portail client (Firebase) — créer/synchroniser silencieusement ; no-op tant que
+    // FB_CONFIG n'est pas renseigné (voir GUIDE_PORTAIL_FIDELITE.md).
+    if (typeof window._fbSyncClientPortal === 'function') window._fbSyncClientPortal(_savedClientId);
 };
 window.ltyDeleteClientModal = function(){
     if (!_editId) return;
@@ -2210,6 +2224,155 @@ window.cpMaybeShowInstallBanner = function(){
     var dismissed = false;
     try { dismissed = localStorage.getItem('covo_pwa_dismiss_fidelitepro') === '1'; } catch(e) {}
     b.style.display = (!isStandalone && !wasInstalled && !dismissed && window._cpDeferredPrompt) ? 'flex' : 'none';
+};
+
+/* ════════════════════════════════════════════════════════════
+   PORTAIL CLIENT (Firebase) — espace en ligne par client (points, crédit,
+   échéances, historique, code-barres), accessible via portail_fidelite.html
+   avec un code client + mot de passe généré automatiquement.
+   Voir GUIDE_PORTAIL_FIDELITE.md pour la mise en service complète (création
+   du projet Firebase, règles de sécurité, compte « staff »). Tant que
+   FB_CONFIG n'est pas renseigné ci-dessous, tout ce module reste inactif
+   (no-op silencieux) — aucun impact sur le fonctionnement existant.
+   ════════════════════════════════════════════════════════════ */
+var FB_CONFIG = {
+    apiKey: "REMPLACER_API_KEY",
+    authDomain: "REMPLACER.firebaseapp.com",
+    projectId: "REMPLACER",
+    storageBucket: "REMPLACER.appspot.com",
+    messagingSenderId: "REMPLACER",
+    appId: "REMPLACER"
+};
+// Compte "staff" créé UNE SEULE FOIS dans Firebase > Authentication > Users,
+// utilisé uniquement pour les mises à jour ultérieures des fiches déjà créées
+// (la création initiale d'un compte client ne nécessite pas ce compte — voir
+// _fbSyncClientPortal ci-dessous). Son UID doit être recopié dans la règle
+// Firestore fournie dans le guide.
+var FB_STAFF_EMAIL = "staff@covopro-portal.local";
+var FB_STAFF_PASSWORD = "R@hi081089";
+var FB_PORTAL_EMAIL_DOMAIN = "covopro-portal.local"; // domaine fictif : les clients n'ont pas besoin d'une vraie adresse e-mail
+var FB_PORTAL_URL = "https://aliand0810.github.io/Covo-pro/portail_fidelite.html"; // à ajuster si le dépôt/chemin diffère
+
+var _fbApp = null, _fbStaffReady = null;
+function _fbInit() {
+    if (!window.firebase || !FB_CONFIG.apiKey || FB_CONFIG.apiKey.indexOf('REMPLACER') === 0) return null;
+    try {
+        if (!_fbApp) _fbApp = firebase.initializeApp(FB_CONFIG, 'covoPortalPrimary');
+        return _fbApp;
+    } catch(e) { console.error('[Portail] Firebase init échouée', e); return null; }
+}
+function _fbStaffSignIn() {
+    var app = _fbInit(); if (!app) return Promise.reject(new Error('Firebase non configuré'));
+    if (_fbStaffReady) return _fbStaffReady;
+    _fbStaffReady = app.auth().signInWithEmailAndPassword(FB_STAFF_EMAIL, FB_STAFF_PASSWORD)
+        .catch(function(err) { _fbStaffReady = null; throw err; });
+    return _fbStaffReady;
+}
+function _fbClientEmail(barcode) { return (barcode||'').toLowerCase() + '@' + FB_PORTAL_EMAIL_DOMAIN; }
+function _fbGenPassword() {
+    var chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // sans caractères ambigus (0/O, 1/I/l)
+    var out = '';
+    for (var i=0;i<8;i++) out += chars.charAt(Math.floor(Math.random()*chars.length));
+    return out;
+}
+function _fbClientPayload(c) {
+    var t = tier(c.points);
+    var echeances = [];
+    (c.echeances||[]).forEach(function(p){
+        (p.items||[]).filter(function(x){ return !x.paid; }).forEach(function(x){
+            echeances.push({ due: x.due||null, amount: +(x.amount||0) });
+        });
+    });
+    echeances.sort(function(a,b){ return new Date(a.due)-new Date(b.due); });
+    var history = (c.history||[]).slice(0,30).map(function(h){
+        return { date: h.date||null, type: h.type||'', amount: +(h.amount||0), points: h.points||0, label: (typeof histLabel==='function') ? histLabel(h.type) : (h.type||'Opération') };
+    });
+    return {
+        name: c.name||'',
+        barcode: c.barcode||'',
+        points: c.points||0,
+        tier: t.n,
+        credit: creditOf(c),
+        creditLimit: limitOf(c),
+        totalSpent: +(c.totalSpent||0),
+        echeances: echeances.slice(0,10),
+        history: history,
+        updatedAt: new Date().toISOString()
+    };
+}
+function _fbSendCredentialsWhatsApp(c, password) {
+    if (c.noWhatsapp) return;
+    if (!c.phone || !_digits(c.phone)) return;
+    var ph = waNormPhone(c.phone, (typeof waCc==='function') ? waCc() : '33');
+    if (!ph) return;
+    var msg = 'Bonjour '+(c.name||'')+' 🎁\n\nVotre espace client fidélité COVO est prêt !\n\n'
+        + '🔗 '+FB_PORTAL_URL+'\n'
+        + '🎫 Code client : '+c.barcode+'\n'
+        + '🔑 Mot de passe : '+password+'\n\n'
+        + 'Vous pourrez y suivre vos points, votre solde et vos avantages à tout moment.';
+    window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(msg), '_blank');
+}
+function _fbResendCredentials(c) {
+    if (!c.portalUid) return;
+    if (c.portalPassword) { _fbSendCredentialsWhatsApp(c, c.portalPassword); return; }
+    // Mot de passe non disponible localement (ex. après restauration d'une sauvegarde plus
+    // ancienne que sa création) : jamais stocké en clair côté Firebase, donc pas récupérable
+    // automatiquement — une réinitialisation manuelle depuis la console Firebase est nécessaire.
+    if (typeof toast === 'function') toast('⚠️ Mot de passe non disponible localement — réinitialisez-le depuis la console Firebase (Authentication)', 'info');
+}
+
+/* Crée le compte portail d'un client s'il n'en a pas encore, puis dans tous les cas
+   synchronise ses données vers Firestore. Appelée automatiquement à l'ouverture d'une
+   fiche client (= un code client "saisi") et à chaque enregistrement ; jamais bloquante
+   pour le travail en caisse — toute erreur reste silencieuse (log console uniquement). */
+window._fbSyncClientPortal = function(clientId, opts) {
+    opts = opts || {};
+    var app = _fbInit(); if (!app) return;
+    var d = lg();
+    var idx = d.customers.findIndex(function(x){ return x.id === clientId; });
+    if (idx === -1) return;
+    var c = d.customers[idx];
+    if (!c.barcode) return; // le code client (carte) est la clé d'accès au portail
+
+    if (c.portalUid) {
+        _fbStaffSignIn().then(function(){
+            return app.firestore().collection('clients').doc(c.portalUid).set(_fbClientPayload(c), { merge: true });
+        }).catch(function(err) { console.error('[Portail] Échec synchronisation', err); });
+        if (opts.resend) _fbResendCredentials(c);
+        return;
+    }
+
+    // Première création : passe par une instance Firebase SECONDAIRE et isolée, car
+    // createUserWithEmailAndPassword authentifie automatiquement l'app qui l'appelle en
+    // tant que ce nouvel utilisateur — on ne veut surtout pas déconnecter la session
+    // "staff" éventuellement active sur l'app principale pendant ce temps.
+    var secondary;
+    try { secondary = firebase.initializeApp(FB_CONFIG, 'covoPortalCreate-' + Date.now()); }
+    catch(e) { console.error('[Portail] Échec init instance secondaire', e); return; }
+    var email = _fbClientEmail(c.barcode);
+    var password = _fbGenPassword();
+    secondary.auth().createUserWithEmailAndPassword(email, password).then(function(cred){
+        var uid = cred.user.uid;
+        return secondary.firestore().collection('clients').doc(uid).set(_fbClientPayload(c)).then(function(){
+            var dd = lg();
+            var ci = dd.customers.findIndex(function(x){ return x.id === clientId; });
+            if (ci !== -1) { dd.customers[ci].portalUid = uid; dd.customers[ci].portalPassword = password; ls(dd); }
+            _fbSendCredentialsWhatsApp(c, password);
+            if (typeof toast === 'function') toast('🔗 Accès portail créé pour ' + c.name, 'success');
+        });
+    }).catch(function(err){
+        console.error('[Portail] Échec création compte client', err);
+    }).finally(function(){
+        secondary.auth().signOut().catch(function(){});
+        setTimeout(function(){ secondary.delete().catch(function(){}); }, 1000);
+    });
+};
+
+// Bouton manuel "🔗 Créer accès"/"🔗 Renvoyer accès" dans la fiche client.
+window.ltyResendPortalAccess = function(id) {
+    var c = find(id); if (!c) return;
+    if (!c.portalUid) { window._fbSyncClientPortal(id); return; }
+    window._fbSyncClientPortal(id, { resend: true });
 };
 
 // ── Initialisation ────────────────────────────────────────────────────────
