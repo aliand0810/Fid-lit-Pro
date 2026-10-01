@@ -218,6 +218,16 @@
     <div id="lty-tab-wrap">
         <div id="lty-list-pane">
             <div style="padding:10px 12px;border-bottom:1px solid var(--border-color);"><input id="lty-srch" placeholder="🔍 Rechercher nom, téléphone…" oninput="ltyFilterList(this.value)" autocomplete="off"></div>
+            <div style="padding:0 12px 10px;border-bottom:1px solid var(--border-color);display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                <button id="lty-cat-filter-btn" onclick="window.ltyToggleCatFilter()" title="N'afficher que les clients autorisés à voir le catalogue" style="padding:5px 10px;border-radius:8px;border:1.5px solid rgba(139,92,246,.3);background:none;color:var(--text-main);font-size:.72rem;font-weight:700;cursor:pointer;white-space:nowrap;">📦 Autorisés seulement</button>
+                <button id="lty-cat-multi-btn" onclick="window.ltyToggleMultiMode()" title="Sélectionner plusieurs clients pour autoriser/bloquer le catalogue en une fois" style="padding:5px 10px;border-radius:8px;border:1.5px solid rgba(139,92,246,.3);background:none;color:var(--text-main);font-size:.72rem;font-weight:700;cursor:pointer;white-space:nowrap;">☑️ Sélection multiple</button>
+            </div>
+            <div id="lty-cat-bulk-bar" style="display:none;padding:8px 12px;border-bottom:1px solid var(--border-color);background:rgba(139,92,246,.07);align-items:center;gap:6px;flex-wrap:wrap;">
+                <span id="lty-cat-bulk-count" style="font-size:.72rem;font-weight:800;color:var(--text-muted);flex:1;">0 sélectionné(s)</span>
+                <button onclick="window.ltyBulkSetCatalog(true)" style="padding:5px 10px;border-radius:8px;border:none;background:#059669;color:#fff;font-size:.72rem;font-weight:800;cursor:pointer;white-space:nowrap;">✅ Autoriser</button>
+                <button onclick="window.ltyBulkSetCatalog(false)" style="padding:5px 10px;border-radius:8px;border:none;background:#dc2626;color:#fff;font-size:.72rem;font-weight:800;cursor:pointer;white-space:nowrap;">🚫 Bloquer</button>
+                <button onclick="window.ltyCancelMultiMode()" style="padding:5px 10px;border-radius:8px;border:1.5px solid var(--border-color);background:none;color:var(--text-muted);font-size:.72rem;font-weight:700;cursor:pointer;white-space:nowrap;">Annuler</button>
+            </div>
             <div id="lty-list-inner"></div>
         </div>
         <div id="lty-detail-pane">
@@ -868,6 +878,9 @@ window._fpLg = lg; window._fpLs = ls;
    ÉTAT
    ════════════════════════════════════════════════════════════ */
 var STATE = { detailId:null, detTab:'stats' };
+var _ltyCatFilterOnly = false;  // n'afficher que les clients autorisés au catalogue
+var _ltyMultiMode = false;      // mode sélection multiple (autorisations catalogue)
+var _ltyMultiSelected = {};     // {clientId:true} sélection courante
 
 /* ════════════════════════════════════════════════════════════
    KPI + LISTE CLIENTS
@@ -889,20 +902,47 @@ function renderList(q){
     var el = document.getElementById('lty-list-inner'); if(!el) return;
     var d = lg(); q = (q||'').toLowerCase().trim();
     var list = q ? d.customers.filter(function(c){ return (c.name||'').toLowerCase().indexOf(q)!==-1 || (c.phone&&c.phone.indexOf(q)!==-1); }) : d.customers.slice();
+    if (_ltyCatFilterOnly) list = list.filter(function(c){ return !!c.catalogAccess; });
     list.sort(function(a,b){ return (b.points||0)-(a.points||0); });
-    if (!list.length){ el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:.8rem;">'+(q?'Aucun résultat':'Aucun client — cliquez « Nouveau client »')+'</div>'; return; }
+
+    // Reflète l'état des boutons de filtre / sélection multiple et de la barre d'actions groupées
+    var filterBtn = document.getElementById('lty-cat-filter-btn');
+    if (filterBtn) {
+        filterBtn.style.background = _ltyCatFilterOnly ? 'rgba(139,92,246,.18)' : 'none';
+        filterBtn.style.borderColor = _ltyCatFilterOnly ? '#7c3aed' : 'rgba(139,92,246,.3)';
+    }
+    var multiBtn = document.getElementById('lty-cat-multi-btn');
+    if (multiBtn) {
+        multiBtn.style.background = _ltyMultiMode ? 'rgba(139,92,246,.18)' : 'none';
+        multiBtn.style.borderColor = _ltyMultiMode ? '#7c3aed' : 'rgba(139,92,246,.3)';
+    }
+    var bulkBar = document.getElementById('lty-cat-bulk-bar');
+    if (bulkBar) bulkBar.style.display = _ltyMultiMode ? 'flex' : 'none';
+    var bulkCount = document.getElementById('lty-cat-bulk-count');
+    if (bulkCount) bulkCount.textContent = Object.keys(_ltyMultiSelected).length + ' sélectionné(s)';
+
+    if (!list.length){
+        el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:.8rem;">'+(q?'Aucun résultat':(_ltyCatFilterOnly?'Aucun client autorisé au catalogue':'Aucun client — cliquez « Nouveau client »'))+'</div>';
+        return;
+    }
     el.innerHTML = list.map(function(c){
         var due = creditOf(c);
         var creditChip = due>0 ? '<span class="lty-badge-chip" style="background:rgba(217,119,6,.16);color:#b45309;">📒 '+due.toFixed(2)+'€</span>' : '';
+        var catChip = c.catalogAccess ? '<span class="lty-badge-chip" style="background:rgba(5,150,105,.15);color:#059669;" title="Catalogue autorisé">📦</span>' : '';
         var nbTkt = (c.history||[]).length;
         var last = c.history && c.history.length ? fmtD(c.history[0].date) : '—';
+        var checkbox = _ltyMultiMode
+            ? '<input type="checkbox" onclick="event.stopPropagation();window.ltyToggleMultiSelect(\''+esc(c.id)+'\',this.checked)" '+(_ltyMultiSelected[c.id]?'checked':'')+' style="width:17px;height:17px;flex-shrink:0;cursor:pointer;margin-right:2px;">'
+            : '';
         return '<div class="lty-row'+(c.id===STATE.detailId?' active':'')+'" data-id="'+esc(c.id)+'" onclick="ltySelectClient(\''+esc(c.id)+'\')">'
+            +checkbox
             +'<div class="lty-av">'+esc(ini(c.name))+'</div>'
             +'<div style="flex:1;min-width:0;"><div style="font-weight:800;font-size:.83rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(c.name)+'</div>'
             +'<div style="font-size:.67rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+nbTkt+' mouvement(s) · '+last+'</div></div>'
             +'<div class="lty-row-meta">'
             +'<span class="lty-badge-chip" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);color:#fff;">⭐ '+(c.points||0)+'</span>'
             +creditChip
+            +catChip
             +'</div></div>';
     }).join('');
 }
@@ -916,6 +956,60 @@ function refreshAll(){
     }
 }
 window._ltyRefresh = refreshAll;
+
+/* ── Autorisations d'accès au catalogue (Portail fidélité) ───────────────
+   Par défaut un client N'A PAS accès à l'onglet « Produits » de son Portail
+   fidélité (opt-in) ; le flag catalogAccess est stocké sur sa fiche locale
+   et poussé dans son document Firestore (clients/{uid}) à la prochaine
+   synchronisation, pour que le portail puisse le lire au login. ── */
+window.ltyToggleCatFilter = function(){
+    _ltyCatFilterOnly = !_ltyCatFilterOnly;
+    renderList(document.getElementById('lty-srch') ? document.getElementById('lty-srch').value : '');
+};
+window.ltyToggleMultiMode = function(){
+    _ltyMultiMode = !_ltyMultiMode;
+    if (!_ltyMultiMode) _ltyMultiSelected = {};
+    renderList(document.getElementById('lty-srch') ? document.getElementById('lty-srch').value : '');
+};
+window.ltyCancelMultiMode = function(){
+    _ltyMultiMode = false;
+    _ltyMultiSelected = {};
+    renderList(document.getElementById('lty-srch') ? document.getElementById('lty-srch').value : '');
+};
+window.ltyToggleMultiSelect = function(id, checked){
+    if (checked) _ltyMultiSelected[id] = true; else delete _ltyMultiSelected[id];
+    var bulkCount = document.getElementById('lty-cat-bulk-count');
+    if (bulkCount) bulkCount.textContent = Object.keys(_ltyMultiSelected).length + ' sélectionné(s)';
+};
+window.ltyBulkSetCatalog = function(allow){
+    var ids = Object.keys(_ltyMultiSelected);
+    if (!ids.length){ toast('⚠️ Aucun client sélectionné', 'info'); return; }
+    var d = lg();
+    var touched = [];
+    ids.forEach(function(id){
+        var c = d.customers.find(function(x){ return x.id===id; });
+        if (c) { if (allow) c.catalogAccess = true; else delete c.catalogAccess; touched.push(id); }
+    });
+    ls(d);
+    touched.forEach(function(id){
+        var c = find(id);
+        if (c && c.portalUid && typeof window._fbSyncClientPortal === 'function') window._fbSyncClientPortal(id);
+    });
+    toast((allow ? '✅ Catalogue autorisé pour ' : '🚫 Catalogue bloqué pour ') + touched.length + ' client(s)', 'success');
+    window.ltyCancelMultiMode();
+    refreshAll();
+};
+window.ltyToggleCatalogAccess = function(id){
+    var d = lg();
+    var c = d.customers.find(function(x){ return x.id===id; });
+    if (!c) return;
+    if (c.catalogAccess) delete c.catalogAccess; else c.catalogAccess = true;
+    ls(d);
+    var updated = find(id);
+    if (updated && updated.portalUid && typeof window._fbSyncClientPortal === 'function') window._fbSyncClientPortal(id);
+    toast(updated.catalogAccess ? ('✅ Catalogue autorisé pour ' + (updated.name||'ce client')) : ('🚫 Catalogue bloqué pour ' + (updated.name||'ce client')), 'success');
+    refreshAll();
+};
 
 /* ════════════════════════════════════════════════════════════
    COCKPIT CLIENT (en-tête synthétique)
@@ -969,6 +1063,7 @@ function renderCockpit(c){
         +'<button onclick="ltyOpenCardModal(\''+esc(c.id)+'\')" style="background:rgba(139,92,246,.12);color:#7c3aed;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">🖨️ Carte</button>'
         +'<button onclick="window.ltySendBalanceWhatsApp(\''+esc(c.id)+'\')" style="background:rgba(5,150,105,.12);color:#059669;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">💰 Envoyer solde</button>'
         +'<button onclick="window.ltyResendPortalAccess(\''+esc(c.id)+'\')" title="Envoyer (ou créer puis envoyer) le code d\'accès à l\'espace client en ligne, par WhatsApp" style="background:rgba(37,99,235,.12);color:#2563eb;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">'+(c.portalUid?'📲 Envoyer le code':'🔗 Créer accès')+'</button>'
+        +'<button onclick="window.ltyToggleCatalogAccess(\''+esc(c.id)+'\')" title="'+(c.catalogAccess?'Retirer l\'accès au catalogue dans le Portail fidélité':'Autoriser ce client à voir le catalogue dans son Portail fidélité')+'" style="background:'+(c.catalogAccess?'rgba(5,150,105,.14)':'rgba(100,116,139,.12)')+';color:'+(c.catalogAccess?'#059669':'#64748b')+';border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">'+(c.catalogAccess?'📦 Catalogue autorisé':'📦 Autoriser catalogue')+'</button>'
         +'</div>'
         +'</div>'
         +'<div style="display:flex;gap:8px;margin-top:13px;flex-wrap:wrap;">'
@@ -2448,6 +2543,7 @@ function _fbClientPayload(c) {
         totalSpent: +(c.totalSpent||0),
         echeances: echeances.slice(0,10),
         history: history,
+        catalogAccess: !!c.catalogAccess,
         updatedAt: new Date().toISOString()
     };
 }
