@@ -209,7 +209,7 @@
                 <button onclick="ltyOpenDashboard()" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;">📊 Vue d'ensemble</button>
                 <button onclick="ltyOpenWaBroadcast()" style="background:#25D366;border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;">💬 WhatsApp</button>
                 <button class="cp-admin-only" onclick="ltyOpenSettings()" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;">⚙️ Points</button>
-                <button class="cp-admin-only" onclick="fbSyncCatalogue()" id="fb-sync-cat-btn" title="Met à jour la liste des produits visible par les clients dans Portail fidélité" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;">🛒 Sync catalogue</button>
+                <button class="cp-admin-only" onclick="fbSyncCatalogue()" id="fb-sync-cat-btn" title="Met à jour la liste des produits visible par les clients dans Portail fidélité" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;position:relative;">🛒 Sync catalogue<span id="fb-sync-cat-dirty-dot" title="Des changements non synchronisés existent" style="display:none;position:absolute;top:-4px;right:-4px;width:11px;height:11px;border-radius:50%;background:#f59e0b;border:2px solid #fff;"></span></button>
                 <button onclick="ltyOpenClientModal(null)" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:white;border-radius:10px;padding:8px 14px;font-weight:800;font-size:.82rem;cursor:pointer;">➕ Nouveau client</button>
             </div>
         </div>
@@ -981,6 +981,17 @@ window.ltyToggleMultiSelect = function(id, checked){
     var bulkCount = document.getElementById('lty-cat-bulk-count');
     if (bulkCount) bulkCount.textContent = Object.keys(_ltyMultiSelected).length + ' sélectionné(s)';
 };
+/* ── Synchronisation des autorisations catalogue ──────────────────────────
+   CORRECTIF (certains comptes ne voyaient pas le catalogue malgré une
+   autorisation accordée) : l'ancienne version ne poussait la mise à jour
+   vers Firestore QUE si le client avait déjà un accès portail existant
+   (portalUid), et le faisait sans attendre ni vérifier le résultat — un
+   échec silencieux (réseau, compte pas encore créé…) laissait croire que
+   tout s'était bien passé alors que rien n'avait été transmis. Désormais :
+   on tente toujours de créer/mettre à jour l'accès portail dès qu'on
+   autorise le catalogue (ce qui crée le compte client au besoin, comme le
+   bouton « Créer accès »), on ATTEND le résultat, et un échec est signalé
+   clairement plutôt que masqué. ── */
 window.ltyBulkSetCatalog = function(allow){
     var ids = Object.keys(_ltyMultiSelected);
     if (!ids.length){ toast('⚠️ Aucun client sélectionné', 'info'); return; }
@@ -991,13 +1002,21 @@ window.ltyBulkSetCatalog = function(allow){
         if (c) { if (allow) c.catalogAccess = true; else delete c.catalogAccess; touched.push(id); }
     });
     ls(d);
-    touched.forEach(function(id){
-        var c = find(id);
-        if (c && c.portalUid && typeof window._fbSyncClientPortal === 'function') window._fbSyncClientPortal(id);
-    });
-    toast((allow ? '✅ Catalogue autorisé pour ' : '🚫 Catalogue bloqué pour ') + touched.length + ' client(s)', 'success');
     window.ltyCancelMultiMode();
-    refreshAll();
+    var base = (allow ? '✅ Catalogue autorisé pour ' : '🚫 Catalogue bloqué pour ') + touched.length + ' client(s)';
+    if (typeof window._fbEnsureClientPortal !== 'function') { toast(base, 'success'); refreshAll(); return; }
+    var toSync = touched.filter(function(id){ var c = find(id); return c && (c.catalogAccess || c.portalUid); });
+    var failCount = 0;
+    Promise.all(toSync.map(function(id){
+        return window._fbEnsureClientPortal(id).catch(function(err){
+            if (err && err.code === 'not-configured') return;
+            failCount++;
+            console.error('[Catalogue] Échec synchronisation (sélection multiple)', id, err);
+        });
+    })).then(function(){
+        toast(failCount ? (base + ' — ⚠️ ' + failCount + ' synchronisation(s) ont échoué, réessayez pour ces client(s)') : base, failCount ? 'error' : 'success');
+        refreshAll();
+    });
 };
 window.ltyToggleCatalogAccess = function(id){
     var d = lg();
@@ -1006,9 +1025,21 @@ window.ltyToggleCatalogAccess = function(id){
     if (c.catalogAccess) delete c.catalogAccess; else c.catalogAccess = true;
     ls(d);
     var updated = find(id);
-    if (updated && updated.portalUid && typeof window._fbSyncClientPortal === 'function') window._fbSyncClientPortal(id);
-    toast(updated.catalogAccess ? ('✅ Catalogue autorisé pour ' + (updated.name||'ce client')) : ('🚫 Catalogue bloqué pour ' + (updated.name||'ce client')), 'success');
-    refreshAll();
+    var base = updated.catalogAccess ? ('✅ Catalogue autorisé pour ' + (updated.name||'ce client')) : ('🚫 Catalogue bloqué pour ' + (updated.name||'ce client'));
+    var needsSync = updated.catalogAccess || updated.portalUid;
+    if (!needsSync || typeof window._fbEnsureClientPortal !== 'function') { toast(base, 'success'); refreshAll(); return; }
+    window._fbEnsureClientPortal(id).then(function(res){
+        var msg = base;
+        if (res && res.justCreated) msg += ' — accès portail créé, cliquez sur « 📲 Envoyer le code » pour le transmettre';
+        toast(msg, 'success');
+    }).catch(function(err){
+        if (err && err.code === 'not-configured') { toast(base, 'success'); return; }
+        console.error('[Catalogue] Échec synchronisation autorisation', id, err);
+        var msg = (typeof _fbErrDetail === 'function') ? _fbErrDetail(err) : null;
+        toast('⚠️ Enregistré localement, mais la synchronisation vers le portail a échoué' + (msg ? ' — ' + msg : ' — réessayez'), 'error');
+    }).finally(function(){
+        refreshAll();
+    });
 };
 
 /* ════════════════════════════════════════════════════════════
@@ -2430,6 +2461,33 @@ var FB_PORTAL_URL = "https://aliand0810.github.io/Portail-fidelite/"; // dépôt
    sont transmises. Nécessite une règle Firestore pour le chemin
    /public/{doc} (voir le message affiché après synchronisation).
    ════════════════════════════════════════════════════════════ */
+/* ── Indicateur « catalogue non synchronisé » ─────────────────────────────
+   COVO Pro (masquage manuel ou automatique des ruptures) pose un repère
+   localStorage dès qu'un changement affectant le Portail fidélité n'a pas
+   encore été transmis. Comme COVO Pro et Fidélité Pro partagent la même
+   origine, ce repère est lisible ici directement — y compris en direct via
+   l'événement "storage" si les deux apps sont ouvertes dans des onglets
+   différents en même temps. ── */
+function _fbCatalogueDirtyCheck() {
+    var dot = document.getElementById('fb-sync-cat-dirty-dot');
+    var btn = document.getElementById('fb-sync-cat-btn');
+    if (!dot || !btn) return;
+    var dirty = false;
+    try { dirty = localStorage.getItem('covo_catalogue_dirty') === '1'; } catch(e) {}
+    dot.style.display = dirty ? 'block' : 'none';
+    btn.title = dirty
+        ? '⚠️ Des changements du Catalogue COVO Pro (masquage, ruptures…) n\'ont pas encore été transmis — cliquez pour synchroniser'
+        : 'Met à jour la liste des produits visible par les clients dans Portail fidélité';
+}
+window.addEventListener('storage', function(e) {
+    if (e.key === 'covo_catalogue_dirty') _fbCatalogueDirtyCheck();
+});
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _fbCatalogueDirtyCheck);
+} else {
+    _fbCatalogueDirtyCheck();
+}
+
 window.fbSyncCatalogue = function() {
     var app = _fbInit();
     if (!app) { toast('⚠️ Firebase non configuré — voir GUIDE_PORTAIL_FIDELITE.md', 'error'); return; }
@@ -2495,6 +2553,8 @@ window.fbSyncCatalogue = function() {
         var waWarn = whatsapp ? '' : ' (⚠️ aucun numéro WhatsApp configuré — voir ⚙️ Points)';
         var hiddenTxt = hiddenSkipped ? (' · ' + hiddenSkipped + ' masqué(s) non transmis') : '';
         var autoHiddenTxt = autoHiddenSkipped ? (' · ' + autoHiddenSkipped + ' en rupture masqué(s) auto.') : '';
+        try { localStorage.removeItem('covo_catalogue_dirty'); } catch(e) {}
+        _fbCatalogueDirtyCheck();
         toast('✅ ' + produits.length + ' produits synchronisés vers le portail client' + hiddenTxt + autoHiddenTxt + waWarn, 'success');
     }).catch(function(err) {
         console.error('[Sync catalogue]', err);
