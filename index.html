@@ -2154,6 +2154,17 @@ window.ltyEchelPayDo = function(num){
 /* ── Initialisation du module ── */
 refreshAll();
 
+/* ── Exports vers window : le module Portail client (Firebase), plus bas
+   dans un <script> séparé, a besoin d'accéder à ces fonctions internes
+   normalement enfermées dans cette IIFE. ── */
+window.lg = lg;
+window.ls = ls;
+window.find = find;
+window.toast = toast;
+window._digits = _digits;
+window.waNormPhone = waNormPhone;
+window.waCc = waCc;
+
 })();
 </script>
 
