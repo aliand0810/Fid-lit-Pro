@@ -209,6 +209,7 @@
                 <button onclick="ltyOpenDashboard()" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;">📊 Vue d'ensemble</button>
                 <button onclick="ltyOpenWaBroadcast()" style="background:#25D366;border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;">💬 WhatsApp</button>
                 <button class="cp-admin-only" onclick="ltyOpenSettings()" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;">⚙️ Points</button>
+                <button class="cp-admin-only" onclick="fbSyncCatalogue()" id="fb-sync-cat-btn" title="Met à jour la liste des produits visible par les clients dans Portail fidélité" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;">🛒 Sync catalogue</button>
                 <button onclick="ltyOpenClientModal(null)" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:white;border-radius:10px;padding:8px 14px;font-weight:800;font-size:.82rem;cursor:pointer;">➕ Nouveau client</button>
             </div>
         </div>
@@ -2307,6 +2308,83 @@ var FB_STAFF_EMAIL = "staff@covopro-portal.local";
 var FB_STAFF_PASSWORD = "R@hi081089";
 var FB_PORTAL_EMAIL_DOMAIN = "covopro-portal.local"; // domaine fictif : les clients n'ont pas besoin d'une vraie adresse e-mail
 var FB_PORTAL_URL = "https://aliand0810.github.io/Portail-fidelite/"; // dépôt réel du portail client sur GitHub Pages
+
+/* ════════════════════════════════════════════════════════════
+   CATALOGUE PRODUITS CÔTÉ PORTAIL — permet aux clients de voir, depuis
+   leur propre téléphone, la liste des produits disponibles chez COVO.
+   COVO Pro (covo_pro_v28_credit.html) et ce fichier sont deux applis
+   séparées : impossible pour le portail client (ouvert sur l'appareil
+   du CLIENT) de lire le localStorage de COVO Pro (ouvert sur la caisse).
+   Le seul pont possible est donc Firebase : ce bouton lit la liste des
+   produits de COVO Pro dans le localStorage DE CE NAVIGATEUR (si COVO
+   Pro a déjà été ouvert ici, sur le même poste, au moins une fois — ce
+   qui est déjà le cas pour l'onglet "Fidélité Pro" ouvert depuis COVO
+   Pro) et la recopie dans Firestore (document public/catalogue), que
+   portail_fidelite.html vient ensuite lire. Ne copie JAMAIS le prix de
+   revient ni le stock exact (seulement "disponible/rupture"), et laisse
+   de côté les images encodées en base64 (trop volumineuses pour un
+   document Firestore limité à 1 Mo) — seules les images en URL externe
+   sont transmises. Nécessite une règle Firestore pour le chemin
+   /public/{doc} (voir le message affiché après synchronisation).
+   ════════════════════════════════════════════════════════════ */
+window.fbSyncCatalogue = function() {
+    var app = _fbInit();
+    if (!app) { toast('⚠️ Firebase non configuré — voir GUIDE_PORTAIL_FIDELITE.md', 'error'); return; }
+    var rawProducts = [];
+    try { rawProducts = JSON.parse(localStorage.getItem('covo_products')) || []; } catch(e) {}
+    if (!Array.isArray(rawProducts) || !rawProducts.length) {
+        toast('⚠️ Aucun produit COVO Pro trouvé dans ce navigateur — ouvrez COVO Pro ici au moins une fois.', 'error');
+        return;
+    }
+    var categories = [];
+    try {
+        var echCats = JSON.parse(localStorage.getItem('covo_ech_categories'));
+        if (Array.isArray(echCats) && echCats.length) categories = echCats.slice();
+    } catch(e) {}
+    if (!categories.length) {
+        try {
+            var legacy = JSON.parse(localStorage.getItem('covo_categories'));
+            if (Array.isArray(legacy) && legacy.length) categories = legacy.slice();
+        } catch(e) {}
+    }
+    var produits = rawProducts
+        .filter(function(p) { return p && p.active !== false && p.name; })
+        .map(function(p) {
+            var isKg = p.unitType === 'kg';
+            var img = (p.img && String(p.img).indexOf('data:') !== 0) ? p.img : '';
+            return {
+                id: p.id,
+                name: p.name,
+                category: p.category || 'Général',
+                unitType: isKg ? 'kg' : 'unit',
+                price: +(isKg ? (p.pricePerKg || 0) : (p.price || 0)),
+                promo: +(p.promo || 0),
+                available: (+(p.stock || 0)) > 0,
+                img: img
+            };
+        });
+    produits.forEach(function(p) { if (categories.indexOf(p.category) === -1) categories.push(p.category); });
+
+    var btn = document.getElementById('fb-sync-cat-btn');
+    var prevTxt = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Sync…'; }
+    _fbStaffSignIn().then(function() {
+        return app.firestore().collection('public').doc('catalogue').set({
+            produits: produits,
+            categories: categories,
+            updatedAt: new Date().toISOString(),
+            count: produits.length
+        });
+    }).then(function() {
+        toast('✅ ' + produits.length + ' produits synchronisés vers le portail client', 'success');
+    }).catch(function(err) {
+        console.error('[Sync catalogue]', err);
+        var msg = (typeof _fbErrDetail === 'function') ? _fbErrDetail({ err: err }) : null;
+        toast('❌ Échec de synchronisation' + (msg ? ' — ' + msg : ' — voir la console (F12)'), 'error');
+    }).finally(function() {
+        if (btn) { btn.disabled = false; btn.textContent = prevTxt; }
+    });
+};
 
 var _fbApp = null, _fbStaffReady = null;
 function _fbInit() {
