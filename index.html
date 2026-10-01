@@ -391,6 +391,10 @@
       <label class="lty-lbl">Valeur d'1 point (en €)</label>
       <input class="lty-fld" id="lset-val" type="number" min="0" step="0.01" placeholder="0.05" oninput="ltyPreviewSettings()">
       <div id="lset-preview" style="margin-top:14px;background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.2);border-radius:9px;padding:11px 13px;font-size:.82rem;color:#6d28d9;line-height:1.5;"></div>
+      <div style="height:18px;border-top:1px solid var(--border-color);margin-top:4px;"></div>
+      <label class="lty-lbl" style="margin-top:14px;">📲 Numéro WhatsApp pour les commandes clients</label>
+      <input class="lty-fld" id="lset-wa" type="tel" placeholder="Ex. 06 12 34 56 78">
+      <div style="margin-top:6px;font-size:.74rem;color:var(--text-muted);line-height:1.5;">Les clients utiliseront ce numéro pour envoyer leur commande depuis le Portail fidélité (onglet Produits → panier). Pensez à cliquer sur « 🛒 Sync catalogue » après l'avoir modifié pour le transmettre au portail.</div>
     </div>
     <div class="lty-box-foot">
       <button class="lty-btn" style="flex:2;" onclick="ltySaveSettings()">💾 Enregistrer</button>
@@ -2018,6 +2022,7 @@ window.ltyOpenSettings = function(){
     var perPoint = (thr>0 && !isNaN(val)) ? (val/thr) : (isNaN(val)?0.05:val);
     document.getElementById('lset-ppe').value = ppeV;
     document.getElementById('lset-val').value = +perPoint.toFixed(4);
+    document.getElementById('lset-wa').value = s.whatsappOrderNumber || '';
     ltyPreviewSettings();
     document.getElementById('lset-modal').classList.add('open');
 };
@@ -2033,10 +2038,13 @@ window.ltySaveSettings = function(){
     var val = parseFloat(document.getElementById('lset-val').value);
     if (isNaN(ppeV)||ppeV<0){ toast('⚠️ Points par € invalide'); return; }
     if (isNaN(val)||val<0){ toast('⚠️ Valeur du point invalide'); return; }
+    var waRaw = (document.getElementById('lset-wa').value || '').trim();
+    var waDigits = waRaw ? waNormPhone(waRaw, '33') : '';
     var d = lg(); if (!d.settings) d.settings={};
     d.settings.pointsPerEuro = ppeV;
     d.settings.rewardThreshold = 1;
     d.settings.rewardValue = val;
+    d.settings.whatsappOrderNumber = waDigits;
     ls(d);
     toast('✅ Réglages des points enregistrés','success');
     ltyCloseSettings();
@@ -2364,6 +2372,8 @@ window.fbSyncCatalogue = function() {
             };
         });
     produits.forEach(function(p) { if (categories.indexOf(p.category) === -1) categories.push(p.category); });
+    var whatsapp = '';
+    try { whatsapp = (lg().settings || {}).whatsappOrderNumber || ''; } catch(e) {}
 
     var btn = document.getElementById('fb-sync-cat-btn');
     var prevTxt = btn ? btn.textContent : '';
@@ -2372,11 +2382,13 @@ window.fbSyncCatalogue = function() {
         return app.firestore().collection('public').doc('catalogue').set({
             produits: produits,
             categories: categories,
+            whatsapp: whatsapp,
             updatedAt: new Date().toISOString(),
             count: produits.length
         });
     }).then(function() {
-        toast('✅ ' + produits.length + ' produits synchronisés vers le portail client', 'success');
+        var waWarn = whatsapp ? '' : ' (⚠️ aucun numéro WhatsApp configuré — voir ⚙️ Points)';
+        toast('✅ ' + produits.length + ' produits synchronisés vers le portail client' + waWarn, 'success');
     }).catch(function(err) {
         console.error('[Sync catalogue]', err);
         var msg = (typeof _fbErrDetail === 'function') ? _fbErrDetail({ err: err }) : null;
