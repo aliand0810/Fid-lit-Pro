@@ -2450,11 +2450,16 @@ window.fbSyncCatalogue = function() {
             if (Array.isArray(legacy) && legacy.length) categories = legacy.slice();
         } catch(e) {}
     }
-    var hiddenSkipped = 0;
+    // Masquage automatique des ruptures (option cochée dans COVO Pro → onglet Catalogue) :
+    // un produit en rupture est alors traité comme masqué du portail, même sans masquage manuel.
+    var autoHideOOS = false;
+    try { autoHideOOS = localStorage.getItem('covo_cat_auto_hide_oos') === '1'; } catch(e) {}
+    var hiddenSkipped = 0, autoHiddenSkipped = 0;
     var produits = rawProducts
         .filter(function(p) {
             if (!p || p.active === false || !p.name) return false;
             if (p.hiddenFromPortal) { hiddenSkipped++; return false; }
+            if (autoHideOOS && (+(p.stock || 0)) <= 0) { autoHiddenSkipped++; return false; }
             return true;
         })
         .map(function(p) {
@@ -2489,7 +2494,8 @@ window.fbSyncCatalogue = function() {
     }).then(function() {
         var waWarn = whatsapp ? '' : ' (⚠️ aucun numéro WhatsApp configuré — voir ⚙️ Points)';
         var hiddenTxt = hiddenSkipped ? (' · ' + hiddenSkipped + ' masqué(s) non transmis') : '';
-        toast('✅ ' + produits.length + ' produits synchronisés vers le portail client' + hiddenTxt + waWarn, 'success');
+        var autoHiddenTxt = autoHiddenSkipped ? (' · ' + autoHiddenSkipped + ' en rupture masqué(s) auto.') : '';
+        toast('✅ ' + produits.length + ' produits synchronisés vers le portail client' + hiddenTxt + autoHiddenTxt + waWarn, 'success');
     }).catch(function(err) {
         console.error('[Sync catalogue]', err);
         var msg = (typeof _fbErrDetail === 'function') ? _fbErrDetail({ err: err }) : null;
