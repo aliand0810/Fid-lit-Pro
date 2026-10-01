@@ -954,7 +954,7 @@ function renderCockpit(c){
         +'<button onclick="ltyOpenClientModal(\''+esc(c.id)+'\')" style="background:rgba(245,158,11,.12);color:#d97706;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">✏️ Modifier</button>'
         +'<button onclick="ltyOpenCardModal(\''+esc(c.id)+'\')" style="background:rgba(139,92,246,.12);color:#7c3aed;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">🖨️ Carte</button>'
         +'<button onclick="window.ltySendBalanceWhatsApp(\''+esc(c.id)+'\')" style="background:rgba(5,150,105,.12);color:#059669;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">💰 Envoyer solde</button>'
-        +'<button onclick="window.ltyResendPortalAccess(\''+esc(c.id)+'\')" title="Créer ou renvoyer l\'accès à l\'espace client en ligne" style="background:rgba(37,99,235,.12);color:#2563eb;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">🔗 '+(c.portalUid?'Renvoyer accès':'Créer accès')+'</button>'
+        +'<button onclick="window.ltyResendPortalAccess(\''+esc(c.id)+'\')" title="Envoyer (ou créer puis envoyer) le code d\'accès à l\'espace client en ligne, par WhatsApp" style="background:rgba(37,99,235,.12);color:#2563eb;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">'+(c.portalUid?'📲 Envoyer le code':'🔗 Créer accès')+'</button>'
         +'</div>'
         +'</div>'
         +'<div style="display:flex;gap:8px;margin-top:13px;flex-wrap:wrap;">'
@@ -2249,7 +2249,7 @@ var FB_CONFIG = {
 // _fbSyncClientPortal ci-dessous). Son UID doit être recopié dans la règle
 // Firestore fournie dans le guide.
 var FB_STAFF_EMAIL = "staff@covopro-portal.local";
-var FB_STAFF_PASSWORD = "R@hi081089";
+var FB_STAFF_PASSWORD = "REMPLACER_PAR_UN_MOT_DE_PASSE_FORT";
 var FB_PORTAL_EMAIL_DOMAIN = "covopro-portal.local"; // domaine fictif : les clients n'ont pas besoin d'une vraie adresse e-mail
 var FB_PORTAL_URL = "https://aliand0810.github.io/Covo-pro/portail_fidelite.html"; // à ajuster si le dépôt/chemin diffère
 
@@ -2300,46 +2300,39 @@ function _fbClientPayload(c) {
         updatedAt: new Date().toISOString()
     };
 }
-function _fbSendCredentialsWhatsApp(c, password) {
-    if (c.noWhatsapp) return;
-    if (!c.phone || !_digits(c.phone)) return;
-    var ph = waNormPhone(c.phone, (typeof waCc==='function') ? waCc() : '33');
-    if (!ph) return;
-    var msg = 'Bonjour '+(c.name||'')+' 🎁\n\nVotre espace client fidélité COVO est prêt !\n\n'
+function _fbWaCredentialsMsg(c, password) {
+    return 'Bonjour '+(c.name||'')+' 🎁\n\nVotre espace client fidélité COVO est prêt !\n\n'
         + '🔗 '+FB_PORTAL_URL+'\n'
         + '🎫 Code client : '+c.barcode+'\n'
         + '🔑 Mot de passe : '+password+'\n\n'
         + 'Vous pourrez y suivre vos points, votre solde et vos avantages à tout moment.';
-    window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(msg), '_blank');
-}
-function _fbResendCredentials(c) {
-    if (!c.portalUid) return;
-    if (c.portalPassword) { _fbSendCredentialsWhatsApp(c, c.portalPassword); return; }
-    // Mot de passe non disponible localement (ex. après restauration d'une sauvegarde plus
-    // ancienne que sa création) : jamais stocké en clair côté Firebase, donc pas récupérable
-    // automatiquement — une réinitialisation manuelle depuis la console Firebase est nécessaire.
-    if (typeof toast === 'function') toast('⚠️ Mot de passe non disponible localement — réinitialisez-le depuis la console Firebase (Authentication)', 'info');
 }
 
-/* Crée le compte portail d'un client s'il n'en a pas encore, puis dans tous les cas
-   synchronise ses données vers Firestore. Appelée automatiquement à l'ouverture d'une
-   fiche client (= un code client "saisi") et à chaque enregistrement ; jamais bloquante
-   pour le travail en caisse — toute erreur reste silencieuse (log console uniquement). */
-window._fbSyncClientPortal = function(clientId, opts) {
-    opts = opts || {};
-    var app = _fbInit(); if (!app) return;
+/* CORRECTIF (le code n'arrivait jamais par WhatsApp) : auparavant, window.open('wa.me/...')
+   était appelé depuis l'intérieur des .then() qui suivent createUserWithEmailAndPassword()
+   — donc après un ou plusieurs allers-retours réseau. Les navigateurs (Chrome/Firefox/Edge…)
+   bloquent SYSTÉMATIQUEMENT un window.open() déclenché ainsi, car ils ne le considèrent plus
+   comme résultant directement d'un clic utilisateur : rien ne s'ouvrait, sans aucune erreur
+   visible (la création du compte et la synchronisation, elles, fonctionnaient bien). La
+   fonction ci-dessous sépare donc clairement « créer/synchroniser le compte » (silencieux,
+   peut être automatique) de « envoyer le message » (toujours déclenché par un clic direct,
+   voir ltyResendPortalAccess plus bas, qui ouvre la fenêtre WhatsApp de façon SYNCHRONE dès
+   le clic pour ne jamais se faire bloquer). */
+window._fbEnsureClientPortal = function(clientId) {
+    var app = _fbInit();
+    if (!app) return Promise.reject({ code: 'not-configured' });
     var d = lg();
     var idx = d.customers.findIndex(function(x){ return x.id === clientId; });
-    if (idx === -1) return;
+    if (idx === -1) return Promise.reject({ code: 'client-not-found' });
     var c = d.customers[idx];
-    if (!c.barcode) return; // le code client (carte) est la clé d'accès au portail
+    if (!c.barcode) return Promise.reject({ code: 'no-barcode' });
 
     if (c.portalUid) {
-        _fbStaffSignIn().then(function(){
+        return _fbStaffSignIn().then(function(){
             return app.firestore().collection('clients').doc(c.portalUid).set(_fbClientPayload(c), { merge: true });
-        }).catch(function(err) { console.error('[Portail] Échec synchronisation', err); });
-        if (opts.resend) _fbResendCredentials(c);
-        return;
+        }).then(function(){
+            return { uid: c.portalUid, password: c.portalPassword || null, justCreated: false };
+        });
     }
 
     // Première création : passe par une instance Firebase SECONDAIRE et isolée, car
@@ -2348,31 +2341,80 @@ window._fbSyncClientPortal = function(clientId, opts) {
     // "staff" éventuellement active sur l'app principale pendant ce temps.
     var secondary;
     try { secondary = firebase.initializeApp(FB_CONFIG, 'covoPortalCreate-' + Date.now()); }
-    catch(e) { console.error('[Portail] Échec init instance secondaire', e); return; }
+    catch(e) { return Promise.reject({ code: 'init-failed', err: e }); }
     var email = _fbClientEmail(c.barcode);
     var password = _fbGenPassword();
-    secondary.auth().createUserWithEmailAndPassword(email, password).then(function(cred){
+    return secondary.auth().createUserWithEmailAndPassword(email, password).then(function(cred){
         var uid = cred.user.uid;
         return secondary.firestore().collection('clients').doc(uid).set(_fbClientPayload(c)).then(function(){
             var dd = lg();
             var ci = dd.customers.findIndex(function(x){ return x.id === clientId; });
             if (ci !== -1) { dd.customers[ci].portalUid = uid; dd.customers[ci].portalPassword = password; ls(dd); }
-            _fbSendCredentialsWhatsApp(c, password);
-            if (typeof toast === 'function') toast('🔗 Accès portail créé pour ' + c.name, 'success');
+            return { uid: uid, password: password, justCreated: true };
         });
     }).catch(function(err){
-        console.error('[Portail] Échec création compte client', err);
+        return Promise.reject({ code: 'firebase-error', err: err });
     }).finally(function(){
         secondary.auth().signOut().catch(function(){});
         setTimeout(function(){ secondary.delete().catch(function(){}); }, 1000);
     });
 };
 
-// Bouton manuel "🔗 Créer accès"/"🔗 Renvoyer accès" dans la fiche client.
+/* Synchronisation silencieuse en arrière-plan — ne tente JAMAIS d'ouvrir WhatsApp (ce serait
+   bloqué par le navigateur, voir ci-dessus). Appelée automatiquement à l'ouverture d'une
+   fiche client (= un code client "saisi") et à chaque enregistrement ; jamais bloquante pour
+   le travail en caisse. Si un compte vient d'être créé, invite simplement à cliquer sur le
+   bouton "Envoyer le code" pour le transmettre réellement au client. */
+window._fbSyncClientPortal = function(clientId) {
+    window._fbEnsureClientPortal(clientId).then(function(res){
+        if (res.justCreated && typeof toast === 'function') {
+            toast('🔗 Accès portail créé — cliquez sur « Envoyer le code » pour le transmettre au client', 'success');
+        }
+    }).catch(function(err){
+        if (err && err.code === 'not-configured') return; // module non configuré : silence total, comportement d'origine inchangé
+        console.error('[Portail] Échec synchronisation en arrière-plan', err);
+    });
+};
+
+/* Bouton manuel "🔗 Créer accès"/"📲 Envoyer le code" dans la fiche client — SEUL point
+   d'entrée qui envoie réellement le message WhatsApp, et toujours depuis un clic direct. */
 window.ltyResendPortalAccess = function(id) {
     var c = find(id); if (!c) return;
-    if (!c.portalUid) { window._fbSyncClientPortal(id); return; }
-    window._fbSyncClientPortal(id, { resend: true });
+
+    if (c.noWhatsapp){ if (typeof toast==='function') toast('🚫 Ce client est en opt-out WhatsApp — décochez l\'option dans sa fiche pour pouvoir lui envoyer le code', 'info'); return; }
+    if (!c.phone || !_digits(c.phone)){ if (typeof toast==='function') toast('⚠️ Aucun numéro de téléphone enregistré pour ce client', 'info'); return; }
+    var ph = waNormPhone(c.phone, (typeof waCc==='function') ? waCc() : '33');
+    if (!ph){ if (typeof toast==='function') toast('⚠️ Numéro de téléphone invalide', 'info'); return; }
+    if (!_fbInit()){ if (typeof toast==='function') toast('⚠️ Portail non configuré — voir GUIDE_PORTAIL_FIDELITE.md', 'info'); return; }
+
+    // Fenêtre ouverte IMMÉDIATEMENT, en synchrone, dans le prolongement direct du clic —
+    // c'est ce qui empêche le navigateur de la bloquer comme un pop-up. Elle sera redirigée
+    // vers le lien wa.me une fois le mot de passe prêt (voir commentaire plus haut).
+    var waWin = window.open('', '_blank');
+    if (waWin){ try { waWin.document.write('<p style="font-family:sans-serif;padding:20px;color:#555;">Préparation du message…</p>'); } catch(e) {} }
+
+    window._fbEnsureClientPortal(id).then(function(res){
+        if (!res.password){
+            // Compte déjà créé mais mot de passe non récupérable localement (ex. restauré
+            // depuis une sauvegarde antérieure à sa création) — jamais stocké en clair côté
+            // Firebase, donc pas possible de le renvoyer automatiquement.
+            if (waWin) waWin.close();
+            if (typeof toast === 'function') toast('⚠️ Mot de passe non disponible localement — réinitialisez-le depuis la console Firebase (Authentication)', 'info');
+            return;
+        }
+        var url = 'https://wa.me/'+ph+'?text='+encodeURIComponent(_fbWaCredentialsMsg(c, res.password));
+        if (waWin && !waWin.closed) waWin.location.href = url;
+        else window.open(url, '_blank'); // repli si la fenêtre a quand même été bloquée/fermée entretemps
+        if (typeof toast === 'function') toast(res.justCreated ? '🔗 Accès créé et code envoyé par WhatsApp' : '📲 Code envoyé par WhatsApp', 'success');
+    }).catch(function(err){
+        if (waWin) waWin.close();
+        var msg = '❌ Échec de l\'envoi — vérifiez la configuration Firebase (voir le guide)';
+        if (err && err.code === 'not-configured') msg = '⚠️ Portail non configuré — voir GUIDE_PORTAIL_FIDELITE.md';
+        else if (err && err.err && err.err.code === 'auth/email-already-in-use') msg = '❌ Un compte existe déjà pour ce code client — vérifiez dans la console Firebase';
+        else if (err && err.err && err.err.code === 'auth/network-request-failed') msg = '⚠️ Problème de connexion internet';
+        if (typeof toast === 'function') toast(msg, 'info');
+        console.error('[Portail] Échec envoi des identifiants', err);
+    });
 };
 
 // ── Initialisation ────────────────────────────────────────────────────────
