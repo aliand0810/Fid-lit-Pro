@@ -419,6 +419,15 @@
 </div>
 
 <!-- ══════════════ MODALE CARTE FIDÉLITÉ (aperçu / impression) ══════════════ -->
+<div class="lty-modal" id="lty-portal-modal">
+  <div class="lty-box" style="max-width:420px;">
+    <div class="lty-box-head"><div style="font-size:1rem;font-weight:900;">🔗 Accès portail client</div><button onclick="document.getElementById('lty-portal-modal').classList.remove('open')">✕</button></div>
+    <div class="lty-box-body">
+      <div id="lty-portal-content"></div>
+    </div>
+  </div>
+</div>
+
 <div class="lty-modal" id="lty-card-modal">
   <div class="lty-box" style="max-width:380px;">
     <div class="lty-box-head"><div style="font-size:1rem;font-weight:900;">🎫 Carte fidélité</div><button onclick="document.getElementById('lty-card-modal').classList.remove('open')">✕</button></div>
@@ -2376,44 +2385,134 @@ window._fbSyncClientPortal = function(clientId) {
     });
 };
 
-/* Bouton manuel "🔗 Créer accès"/"📲 Envoyer le code" dans la fiche client — SEUL point
-   d'entrée qui envoie réellement le message WhatsApp, et toujours depuis un clic direct. */
+/* ── Modale « Accès portail client » ─────────────────────────────────────
+   AMÉLIORATION (demande : pouvoir visualiser le code/mot de passe du client,
+   l'envoi WhatsApp automatique restant peu fiable selon navigateur/config) :
+   le bouton de la fiche client ouvre maintenant une fenêtre qui affiche
+   TOUJOURS le résultat à l'écran — code client, mot de passe en clair avec
+   bouton copier, lien du portail — qu'elle reste ouverte jusqu'à fermeture
+   manuelle, plutôt qu'un simple toast éphémère facile à manquer. L'envoi par
+   WhatsApp devient un bouton optionnel À L'INTÉRIEUR de cette fenêtre (donc
+   toujours déclenché par un clic direct et frais, sans risque de blocage
+   pop-up). En cas d'échec (Firebase mal configuré, réseau, etc.), la fenêtre
+   affiche le détail exact de l'erreur au lieu d'un échec silencieux. ── */
+function _fbCopyField(btn, text) {
+    function done(ok) {
+        var old = btn.textContent;
+        btn.textContent = ok ? '✅' : '❌';
+        setTimeout(function(){ btn.textContent = old; }, 1400);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function(){ done(true); }).catch(function(){ done(false); });
+    } else {
+        try {
+            var ta = document.createElement('textarea');
+            ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+            document.body.appendChild(ta); ta.focus(); ta.select();
+            var ok = document.execCommand('copy');
+            document.body.removeChild(ta);
+            done(ok);
+        } catch(e) { done(false); }
+    }
+}
+function _fbPortalFieldHtml(label, value, bg, border) {
+    return '<div style="background:'+bg+';border:1px solid '+border+';border-radius:10px;padding:11px 13px;">'
+        + '<div style="font-size:.66rem;font-weight:800;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;">'+_pfSafeEsc(label)+'</div>'
+        + '<div style="display:flex;align-items:center;gap:8px;margin-top:3px;">'
+        + '<code style="font-family:monospace;font-weight:800;font-size:.92rem;flex:1;word-break:break-all;">'+_pfSafeEsc(value)+'</code>'
+        + '<button onclick="_fbCopyField(this,'+_fbJsAttr(value)+')" title="Copier" style="background:none;border:1px solid var(--border-color,#dde3ee);border-radius:7px;padding:4px 8px;cursor:pointer;font-size:.82rem;flex-shrink:0;">📋</button>'
+        + '</div></div>';
+}
+function _pfSafeEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(m){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]; }); }
+// Construit un littéral JS entre apostrophes, à insérer dans un attribut onclick="..."
+// (délimité par des guillemets doubles) SANS jamais utiliser JSON.stringify ici : son
+// résultat entre guillemets doubles romprait l'attribut HTML qui, lui, utilise déjà des
+// guillemets doubles comme délimiteur.
+function _fbJsStr(s){ return "'" + String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'") + "'"; }
+// Le littéral JS ci-dessus doit encore être échappé HTML une fois inséré dans un attribut
+// onclick="..." : le navigateur décode les entités HTML d'un attribut AVANT de l'exécuter
+// comme JS, donc passer par _pfSafeEsc ici est sans danger pour l'exécution, et protège
+// contre un guillemet double ou un "<"/">" qui romprait sinon l'attribut HTML lui-même.
+function _fbJsAttr(s){ return _pfSafeEsc(_fbJsStr(s)); }
+function _fbPortalSuccessHtml(clientId, password) {
+    var c = find(clientId);
+    if (!c) return _fbPortalErrorHtml('Client introuvable', 'La fiche a peut-être été supprimée entretemps.');
+    var hasPhone = !!(c.phone && _digits(c.phone));
+    var waBlock;
+    if (c.noWhatsapp) {
+        waBlock = '<div style="font-size:.76rem;color:var(--text-muted);background:rgba(217,119,6,.1);border-radius:8px;padding:9px 11px;">🚫 Client en opt-out WhatsApp — communiquez le code manuellement, ou décochez l\'option dans sa fiche.</div>';
+    } else if (!hasPhone) {
+        waBlock = '<div style="font-size:.76rem;color:var(--text-muted);background:rgba(217,119,6,.1);border-radius:8px;padding:9px 11px;">⚠️ Aucun numéro de téléphone enregistré — communiquez le code manuellement.</div>';
+    } else if (!password) {
+        waBlock = '';
+    } else {
+        waBlock = '<button onclick="window._fbSendWaNow(\''+clientId+'\')" style="width:100%;padding:10px;background:linear-gradient(135deg,#25D366,#128C7E);color:#fff;border:none;border-radius:9px;font-weight:800;font-size:.85rem;cursor:pointer;">📲 Envoyer par WhatsApp</button>';
+    }
+    var passwordBlock = password
+        ? _fbPortalFieldHtml('Mot de passe', password, 'rgba(5,150,105,.07)', 'rgba(5,150,105,.2)')
+        : '<div style="font-size:.76rem;color:var(--text-muted);background:rgba(220,38,38,.08);border-radius:8px;padding:9px 11px;">⚠️ Mot de passe non disponible localement (compte créé avant une restauration, ou sur un autre appareil) — réinitialisez-le depuis la console Firebase (Authentication → Users), puis communiquez-le manuellement.</div>';
+    return '<div style="display:flex;flex-direction:column;gap:10px;">'
+        + '<div style="font-size:.8rem;color:var(--text-muted);">Accès de <b>'+_pfSafeEsc(c.name)+'</b> :</div>'
+        + _fbPortalFieldHtml('Code client', c.barcode||'—', 'rgba(37,99,235,.07)', 'rgba(37,99,235,.2)')
+        + passwordBlock
+        + _fbPortalFieldHtml('Lien du portail', FB_PORTAL_URL, 'rgba(124,58,237,.07)', 'rgba(124,58,237,.2)')
+        + waBlock
+        + '</div>';
+}
+function _fbErrTitle(err) {
+    if (err && err.code === 'not-configured') return '⚠️ Portail non configuré';
+    if (err && err.err && err.err.code === 'auth/email-already-in-use') return '❌ Compte déjà existant';
+    if (err && err.err && err.err.code === 'auth/network-request-failed') return '⚠️ Problème de connexion';
+    if (err && err.err && err.err.code === 'auth/invalid-api-key') return '❌ Configuration Firebase invalide';
+    return '❌ Échec';
+}
+function _fbErrDetail(err) {
+    if (err && err.code === 'not-configured') return 'Le fichier fidelite_pro.html n\'est pas encore relié à votre projet Firebase (FB_CONFIG en haut du fichier contient toujours "REMPLACER..."). Suivez le GUIDE_PORTAIL_FIDELITE.md, étape « Renseigner les deux fichiers », puis rouvrez cette page.';
+    if (err && err.code === 'no-barcode') return 'Ce client n\'a pas encore de code/carte fidélité généré — ouvrez sa fiche et enregistrez-la une première fois.';
+    if (err && err.err && err.err.code === 'auth/email-already-in-use') return 'Un compte existe déjà pour ce code client côté Firebase, mais la fiche locale n\'a pas son identifiant — contactez-moi avec ce message pour le réparer sans perdre l\'accès déjà créé.';
+    if (err && err.err && err.err.code === 'auth/network-request-failed') return 'Vérifiez votre connexion internet, puis réessayez.';
+    if (err && err.err && err.err.code === 'auth/invalid-api-key') return 'La valeur FB_CONFIG.apiKey ne correspond à aucun projet Firebase valide — revérifiez qu\'elle a été copiée intégralement depuis la console Firebase (Paramètres du projet → Général → Vos applications), dans LES DEUX fichiers (fidelite_pro.html et portail_fidelite.html).';
+    if (err && err.err && err.err.message) return err.err.message;
+    return 'Détail technique indisponible — ouvrez la console du navigateur (F12) pour plus d\'informations, ou renvoyez-moi ce message pour que je creuse.';
+}
+function _fbPortalErrorHtml(title, detail) {
+    return '<div style="text-align:center;padding:6px 2px;">'
+        + '<div style="font-size:1.8rem;">⚠️</div>'
+        + '<div style="margin-top:8px;font-weight:800;color:#dc2626;font-size:.9rem;">'+_pfSafeEsc(title)+'</div>'
+        + '<div style="margin-top:7px;font-size:.78rem;color:var(--text-muted);line-height:1.55;text-align:left;">'+_pfSafeEsc(detail)+'</div>'
+        + '</div>';
+}
+// Appelé depuis le bouton WhatsApp DANS la modale — un clic direct et frais à chaque fois,
+// donc jamais bloqué par le navigateur (contrairement à un appel fait après un .then()).
+window._fbSendWaNow = function(clientId) {
+    var c = find(clientId); if (!c) return;
+    if (!c.portalPassword) return;
+    var ph = waNormPhone(c.phone, (typeof waCc==='function') ? waCc() : '33');
+    if (!ph) return;
+    window.open('https://wa.me/'+ph+'?text='+encodeURIComponent(_fbWaCredentialsMsg(c, c.portalPassword)), '_blank');
+};
+
+// Bouton manuel "🔗 Créer accès"/"📲 Envoyer le code" dans la fiche client — ouvre la
+// modale ci-dessus et y affiche le résultat (code + mot de passe + lien, ou l'erreur
+// précise), que l'envoi WhatsApp automatique ait fonctionné ou non.
 window.ltyResendPortalAccess = function(id) {
     var c = find(id); if (!c) return;
+    var modal = document.getElementById('lty-portal-modal');
+    var content = document.getElementById('lty-portal-content');
+    if (!modal || !content) return;
+    modal.classList.add('open');
+    content.innerHTML = '<div style="text-align:center;padding:24px 10px;"><div style="font-size:1.8rem;">⏳</div><div style="margin-top:8px;color:var(--text-muted);font-size:.85rem;">Création / synchronisation en cours…</div></div>';
 
-    if (c.noWhatsapp){ if (typeof toast==='function') toast('🚫 Ce client est en opt-out WhatsApp — décochez l\'option dans sa fiche pour pouvoir lui envoyer le code', 'info'); return; }
-    if (!c.phone || !_digits(c.phone)){ if (typeof toast==='function') toast('⚠️ Aucun numéro de téléphone enregistré pour ce client', 'info'); return; }
-    var ph = waNormPhone(c.phone, (typeof waCc==='function') ? waCc() : '33');
-    if (!ph){ if (typeof toast==='function') toast('⚠️ Numéro de téléphone invalide', 'info'); return; }
-    if (!_fbInit()){ if (typeof toast==='function') toast('⚠️ Portail non configuré — voir GUIDE_PORTAIL_FIDELITE.md', 'info'); return; }
-
-    // Fenêtre ouverte IMMÉDIATEMENT, en synchrone, dans le prolongement direct du clic —
-    // c'est ce qui empêche le navigateur de la bloquer comme un pop-up. Elle sera redirigée
-    // vers le lien wa.me une fois le mot de passe prêt (voir commentaire plus haut).
-    var waWin = window.open('', '_blank');
-    if (waWin){ try { waWin.document.write('<p style="font-family:sans-serif;padding:20px;color:#555;">Préparation du message…</p>'); } catch(e) {} }
+    if (!_fbInit()) {
+        content.innerHTML = _fbPortalErrorHtml(_fbErrTitle({code:'not-configured'}), _fbErrDetail({code:'not-configured'}));
+        return;
+    }
 
     window._fbEnsureClientPortal(id).then(function(res){
-        if (!res.password){
-            // Compte déjà créé mais mot de passe non récupérable localement (ex. restauré
-            // depuis une sauvegarde antérieure à sa création) — jamais stocké en clair côté
-            // Firebase, donc pas possible de le renvoyer automatiquement.
-            if (waWin) waWin.close();
-            if (typeof toast === 'function') toast('⚠️ Mot de passe non disponible localement — réinitialisez-le depuis la console Firebase (Authentication)', 'info');
-            return;
-        }
-        var url = 'https://wa.me/'+ph+'?text='+encodeURIComponent(_fbWaCredentialsMsg(c, res.password));
-        if (waWin && !waWin.closed) waWin.location.href = url;
-        else window.open(url, '_blank'); // repli si la fenêtre a quand même été bloquée/fermée entretemps
-        if (typeof toast === 'function') toast(res.justCreated ? '🔗 Accès créé et code envoyé par WhatsApp' : '📲 Code envoyé par WhatsApp', 'success');
+        content.innerHTML = _fbPortalSuccessHtml(id, res.password);
     }).catch(function(err){
-        if (waWin) waWin.close();
-        var msg = '❌ Échec de l\'envoi — vérifiez la configuration Firebase (voir le guide)';
-        if (err && err.code === 'not-configured') msg = '⚠️ Portail non configuré — voir GUIDE_PORTAIL_FIDELITE.md';
-        else if (err && err.err && err.err.code === 'auth/email-already-in-use') msg = '❌ Un compte existe déjà pour ce code client — vérifiez dans la console Firebase';
-        else if (err && err.err && err.err.code === 'auth/network-request-failed') msg = '⚠️ Problème de connexion internet';
-        if (typeof toast === 'function') toast(msg, 'info');
-        console.error('[Portail] Échec envoi des identifiants', err);
+        content.innerHTML = _fbPortalErrorHtml(_fbErrTitle(err), _fbErrDetail(err));
+        console.error('[Portail] Échec création/synchronisation', err);
     });
 };
 
