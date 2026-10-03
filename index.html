@@ -338,8 +338,13 @@
     .lty-row{display:flex;align-items:center;gap:10px;padding:10px 11px;border-radius:10px;cursor:pointer;margin-bottom:4px;border:1.5px solid transparent;transition:all .13s;}
     .lty-row:hover{background:rgba(139,92,246,.07);border-color:rgba(139,92,246,.2);}
     .lty-row.active{background:rgba(139,92,246,.13);border-color:rgba(139,92,246,.38);}
-    .lty-av{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:900;color:white;flex-shrink:0;}
+    .lty-av{position:relative;width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:900;color:white;flex-shrink:0;}
     .lty-row-meta{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:5px;flex-shrink:0;max-width:46%;}
+    .lty-resv-bubble{display:inline-flex;align-items:center;gap:3px;padding:1px 8px;border-radius:20px;font-size:.63rem;font-weight:800;white-space:nowrap;flex-shrink:0;line-height:1.6;cursor:help;}
+    .lty-resv-bubble.has-dispo{animation:ltyResvPulse 2.2s ease-in-out infinite;}
+    @keyframes ltyResvPulse{0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,.35);}50%{box-shadow:0 0 0 4px rgba(5,150,105,0);}}
+    .lty-av-dot{position:absolute;top:-5px;right:-6px;min-width:18px;height:18px;padding:0 4px;border-radius:9px;color:#fff;font-size:.6rem;font-weight:900;display:flex;align-items:center;justify-content:center;border:2px solid var(--bg-card,#fff);box-sizing:border-box;}
+    @media (prefers-reduced-motion: reduce){.lty-resv-bubble.has-dispo{animation:none;}}
     .lty-badge-chip{font-weight:800;font-size:.62rem;padding:2px 8px;border-radius:11px;white-space:nowrap;line-height:1.55;display:inline-flex;align-items:center;}
     #lty-detail-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);gap:8px;padding:40px 10px;}
     #lty-detail-view{display:none;flex-direction:column;flex:1;overflow:hidden;}
@@ -1201,7 +1206,7 @@ var LK = 'covo_loyalty';
 var PK = 'covo_products';
 
 function lg(){ try{ return JSON.parse(localStorage.getItem(LK)||'null') || {customers:[],settings:{pointsPerEuro:1,rewardThreshold:1,rewardValue:0.05}}; }catch(e){ return {customers:[],settings:{pointsPerEuro:1,rewardThreshold:1,rewardValue:0.05}}; } }
-function ls(d){ localStorage.setItem(LK, JSON.stringify(d)); if (typeof window.cpDriveMarkDirty==='function') window.cpDriveMarkDirty(); }
+function ls(d){ localStorage.setItem(LK, JSON.stringify(d)); if (typeof window.cpDriveMarkDirty==='function') window.cpDriveMarkDirty(); if (typeof window._fbAutoSyncSchedule==='function') window._fbAutoSyncSchedule(); }
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function ini(n){ n=String(n||'').trim(); if(!n) return '?'; var p=n.split(/\s+/); return ((p[0][0]||'')+(p[1]?p[1][0]:'')).toUpperCase(); }
 function find(id){ return lg().customers.find(function(x){ return x.id===id; }); }
@@ -1242,7 +1247,7 @@ function genBarcode(name, phone, customers, selfId){
 
 /* ── Produits (catalogue partagé, lecture/écriture directe) ── */
 function getProducts(){ try{ return JSON.parse(localStorage.getItem(PK)||'[]'); }catch(e){ return []; } }
-function saveProducts(list){ localStorage.setItem(PK, JSON.stringify(list)); if (typeof window.cpDriveMarkDirty==='function') window.cpDriveMarkDirty(); }
+function saveProducts(list){ localStorage.setItem(PK, JSON.stringify(list)); if (typeof window.cpDriveMarkDirty==='function') window.cpDriveMarkDirty(); if (typeof window._fbAutoSyncSchedule==='function') window._fbAutoSyncSchedule(); }
 function findProduct(id){ return getProducts().find(function(p){ return String(p.id)===String(id); }); }
 function productSearch(q){
     q=(q||'').toLowerCase().trim(); if(!q) return [];
@@ -1322,8 +1327,11 @@ function renderList(q){
         el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:.8rem;">'+(q?'Aucun résultat':(_ltyCatFilterOnly?'Aucun client autorisé au catalogue':'Aucun client — cliquez « Nouveau client »'))+'</div>';
         return;
     }
+    var _pm = _ltyProdMap();
     el.innerHTML = list.map(function(c){
         var due = creditOf(c);
+        var rs = resvSummary(c, _pm);
+        var avDot = rs.tot ? '<span class="lty-av-dot" style="background:'+(rs.dispo?'#059669':'#d97706')+';" title="'+(rs.dispo?(rs.dispo+' réservation(s) disponible(s)'):(rs.tot+' réservation(s) en attente de stock'))+'">'+(rs.dispo||rs.tot)+'</span>' : '';
         var creditChip = due>0 ? '<span class="lty-badge-chip" style="background:rgba(217,119,6,.16);color:#b45309;">📒 '+due.toFixed(2)+'€</span>' : '';
         var catChip = c.catalogAccess ? '<span class="lty-badge-chip" style="background:rgba(5,150,105,.15);color:#059669;" title="Catalogue autorisé">📦</span>' : '';
         var nbTkt = (c.history||[]).length;
@@ -1333,8 +1341,8 @@ function renderList(q){
             : '';
         return '<div class="lty-row'+(c.id===STATE.detailId?' active':'')+'" data-id="'+esc(c.id)+'" onclick="ltySelectClient(\''+esc(c.id)+'\')">'
             +checkbox
-            +'<div class="lty-av">'+esc(ini(c.name))+'</div>'
-            +'<div style="flex:1;min-width:0;"><div style="font-weight:800;font-size:.83rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(c.name)+'</div>'
+            +'<div class="lty-av">'+esc(ini(c.name))+avDot+'</div>'
+            +'<div style="flex:1;min-width:0;"><div style="display:flex;align-items:center;gap:6px;min-width:0;"><span style="font-weight:800;font-size:.83rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;">'+esc(c.name)+'</span>'+resvBubbleHtml(rs)+'</div>'
             +'<div style="font-size:.67rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+nbTkt+' mouvement(s) · '+last+'</div></div>'
             +'<div class="lty-row-meta">'
             +'<span class="lty-badge-chip" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);color:#fff;">⭐ '+(c.points||0)+'</span>'
@@ -1461,6 +1469,35 @@ function tileHtml(ico,val,label,col){
     return '<div class="lty-tile"><div class="l">'+ico+' '+label+'</div><div class="v" style="color:'+(col||'var(--text-main)')+';">'+val+'</div></div>';
 }
 function resvAvail(r){ var p=findProduct(r.productId); var s=p?p.stock:null; return (r.decremented!==false) || (s!=null && s>=(r.qty||0)); }
+// Résumé des réservations d'un client : nombre d'articles réservés et combien sont disponibles.
+// prodMap (optionnel) évite de relire le catalogue pour chaque réservation quand on affiche toute la liste.
+function _ltyProdMap(){ var m = {}; getProducts().forEach(function(p){ m[String(p.id)] = p; }); return m; }
+function resvSummary(c, prodMap){
+    var resv = c.reservations || [];
+    var out = { tot: resv.length, dispo: 0, lines: [] };
+    resv.forEach(function(r){
+        var av;
+        if (prodMap) { var p = prodMap[String(r.productId)]; var s = p ? p.stock : null; av = (r.decremented!==false) || (s!=null && s>=(r.qty||0)); }
+        else av = resvAvail(r);
+        if (av) out.dispo++;
+        out.lines.push((av ? '✅ ' : '⏳ ') + (r.productName || 'Article') + ' ' + (r.unitType==='kg' ? (r.qty+' kg') : ('×'+(r.qty||1))));
+    });
+    return out;
+}
+// Bulle d'information affichée à côté du nom du client
+function resvBubbleHtml(s, big){
+    if (!s || !s.tot) return '';
+    var none = s.dispo === 0, all = s.dispo === s.tot;
+    var bg  = none ? 'rgba(245,158,11,.16)' : 'rgba(5,150,105,.15)';
+    var col = none ? '#b45309' : '#047857';
+    // Liste (colonne étroite) : version courte « 📦 8 · ✅ 5 » pour laisser le nom lisible ; fiche : texte complet
+    var txt = big
+        ? ('📦 ' + s.tot + ' réservé' + (s.tot>1?'s':'') + ' · ' + (none ? '⏳ aucun dispo' : ('✅ ' + (all ? (s.tot>1 ? 'tous dispo' : 'dispo') : (s.dispo + ' dispo')))))
+        : ('📦 ' + s.tot + ' · ' + (none ? '⏳ 0' : ('✅ ' + s.dispo)));
+    var tip = 'Ce client a réservé ' + s.tot + ' article' + (s.tot>1?'s':'') + ' — ' + s.dispo + ' disponible' + (s.dispo>1?'s':'') + ' :\n' + s.lines.join('\n');
+    return '<span class="lty-resv-bubble'+(s.dispo?' has-dispo':'')+'" title="'+esc(tip)+'" style="background:'+bg+';color:'+col+';'
+        + (big ? 'font-size:.74rem;padding:3px 11px;' : '') + '">' + txt + '</span>';
+}
 
 function renderCockpit(c){
     var top = document.getElementById('lty-detail-top'); if(!top) return;
@@ -1481,10 +1518,12 @@ function renderCockpit(c){
         +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
         +'<span style="font-weight:900;font-size:1.08rem;">'+esc(c.name)+'</span>'
         +'<span style="background:'+t.bg+';color:'+t.c+';padding:2px 10px;border-radius:20px;font-weight:900;font-size:.72rem;">'+t.ico+' '+t.n+'</span>'
+        +resvBubbleHtml(resvSummary(c), true)
         +(c.costPriceClient?'<span class="lty-badge-chip" style="background:rgba(245,158,11,.15);color:#b45309;">🏷️ Prix d\'achat</span>':'')
         +'</div>'
         +'<div style="font-size:.72rem;color:var(--text-muted);margin-top:3px;">'+(c.phone?'📞 '+esc(c.phone)+'  ':'')+(c.barcode?'🎫 '+esc(c.barcode):(c.email?'✉️ '+esc(c.email):''))+'</div>'
         +'<div style="display:inline-flex;align-items:center;gap:6px;margin-top:7px;background:'+h.bg+';color:'+h.c+';padding:4px 11px;border-radius:20px;font-weight:800;font-size:.74rem;">'+h.dot+' '+h.txt+'</div>'
+        +'<div id="lty-portal-sync-status" data-id="'+esc(c.id)+'" style="font-size:.68rem;color:var(--text-muted);margin-top:6px;">'+(typeof window._fbSyncStatusHtml==='function' ? window._fbSyncStatusHtml(c) : '')+'</div>'
         +'</div>'
         +'<div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;">'
         +'<button onclick="ltyOpenClientModal(\''+esc(c.id)+'\')" style="background:rgba(245,158,11,.12);color:#d97706;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">✏️ Modifier</button>'
@@ -2928,13 +2967,7 @@ window.fbSyncCatalogue = function() {
                 price: +(isKg ? (p.pricePerKg || 0) : (p.price || 0)),
                 promo: +(p.promo || 0),
                 available: (+(p.stock || 0)) > 0,
-                img: img,
-                // Code-barres : indispensable au scanner d'articles du Portail fidélité
-                barcode: p.barcode ? String(p.barcode).trim() : '',
-                // Date de création : alimente le bandeau « Nouvel arrivage » du portail
-                createdAt: p.dateCreated || p.createdAt || '',
-                desc: p.description ? String(p.description).slice(0, 400) : '',
-                brand: p.brand || ''
+                img: img
             };
         });
     produits.forEach(function(p) { if (categories.indexOf(p.category) === -1) categories.push(p.category); });
@@ -3002,6 +3035,7 @@ function _fbClientPayload(c) {
     var history = (c.history||[]).slice(0,30).map(function(h){
         return { date: h.date||null, type: h.type||'', amount: +(h.amount||0), points: h.points||0, label: (typeof histLabel==='function') ? histLabel(h.type) : (h.type||'Opération') };
     });
+    var _rv = _fbResvPayload(c);
     return {
         name: c.name||'',
         barcode: c.barcode||'',
@@ -3013,8 +3047,22 @@ function _fbClientPayload(c) {
         echeances: echeances.slice(0,10),
         history: history,
         catalogAccess: !!c.catalogAccess,
+        reservations: _rv.list,
+        resvTotal: _rv.tot,
+        resvDispo: _rv.dispo,
         updatedAt: new Date().toISOString()
     };
+}
+// Réservations envoyées au portail, avec leur disponibilité calculée sur le stock actuel
+function _fbResvPayload(c) {
+    var pm = {};
+    try { (JSON.parse(localStorage.getItem('covo_products') || '[]') || []).forEach(function(p){ pm[String(p.id)] = p; }); } catch(e) {}
+    var all = (c.reservations || []).map(function(r){
+        var p = pm[String(r.productId)], s = p ? p.stock : null;
+        return { name: r.productName || 'Article', qty: +(r.qty || 0), unitType: r.unitType || 'unit', price: +(r.price || 0),
+                 date: r.date || null, available: (r.decremented !== false) || (s != null && s >= (r.qty || 0)) };
+    });
+    return { list: all.slice(0, 40), tot: all.length, dispo: all.filter(function(x){ return x.available; }).length };
 }
 function _fbWaCredentialsMsg(c, password) {
     return 'Bonjour '+(c.name||'')+' 🎁\n\nVotre espace client fidélité COVO est prêt !\n\n'
@@ -3047,6 +3095,7 @@ window._fbEnsureClientPortal = function(clientId) {
         return _fbStaffSignIn().then(function(){
             return app.firestore().collection('clients').doc(c.portalUid).set(_fbClientPayload(c), { merge: true });
         }).then(function(){
+            if (typeof _fbSyncStatePut === 'function') { var _fc = find(clientId); if (_fc) _fbSyncStatePut(clientId, { h: _fbPayloadHash(_fc), ok: true, at: new Date().toISOString() }); _fbSyncStatusRefresh(); }
             return { uid: c.portalUid, password: c.portalPassword || null, justCreated: false };
         });
     }
@@ -3091,6 +3140,90 @@ window._fbSyncClientPortal = function(clientId) {
         console.error('[Portail] Échec synchronisation en arrière-plan', err);
     });
 };
+
+/* ── SYNCHRONISATION AUTOMATIQUE fiche fidélité → Portail fidélité ─────────
+   Dès qu'une fiche change (points, crédit, échéances, réservations, disponibilité
+   des articles réservés…) — ici, dans COVO Pro ou dans Caisse Pro — chaque client
+   qui possède un accès portail est mis à jour sur Firebase, sans action manuelle.
+   Seules les fiches qui ont réellement changé sont envoyées (empreinte du contenu),
+   un échec est retenté automatiquement. Les identifiants « staff » restent
+   uniquement dans ce fichier (le portail client ne fait que lire). ── */
+var FB_SYNC_STATE_KEY = 'covo_portal_sync_state';
+var _fbAutoT = null, _fbAutoRunning = false, _fbAutoAgain = false;
+function _fbHash(s) {
+    var h1 = 0x811c9dc5, h2 = 0x01000193 ^ s.length;
+    for (var i = 0; i < s.length; i++) { var ch = s.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 16777619); h2 = Math.imul(h2 ^ ch, 2246822519); }
+    return (h1 >>> 0).toString(16) + (h2 >>> 0).toString(16);
+}
+function _fbSyncStateGet() { try { return JSON.parse(localStorage.getItem(FB_SYNC_STATE_KEY) || '{}') || {}; } catch(e) { return {}; } }
+function _fbSyncStatePut(id, v) { var s = _fbSyncStateGet(); s[id] = v; try { localStorage.setItem(FB_SYNC_STATE_KEY, JSON.stringify(s)); } catch(e) {} }
+function _fbPayloadHash(c) { var p = _fbClientPayload(c); delete p.updatedAt; return _fbHash(JSON.stringify(p)); }
+window._fbAutoSyncSchedule = function(delay) {
+    clearTimeout(_fbAutoT);
+    _fbAutoT = setTimeout(_fbAutoSyncRun, delay == null ? 2500 : delay);
+};
+function _fbAutoSyncRun() {
+    var app = _fbInit();
+    if (!app) return; // module Portail non configuré : aucune action
+    if (_fbAutoRunning) { _fbAutoAgain = true; return; }
+    var st = _fbSyncStateGet(), todo = [];
+    lg().customers.forEach(function(c) {
+        if (!c.portalUid || !c.barcode) return;
+        var h = _fbPayloadHash(c), cur = st[c.id];
+        if (!cur || !cur.ok || cur.h !== h) todo.push({ id: c.id, uid: c.portalUid, h: h });
+    });
+    if (!todo.length) { _fbSyncStatusRefresh(); return; }
+    _fbAutoRunning = true;
+    _fbSyncStatusRefresh(true);
+    _fbStaffSignIn().then(function() {
+        var chain = Promise.resolve();
+        todo.forEach(function(tk) {
+            chain = chain.then(function() {
+                var c = find(tk.id); if (!c || !c.portalUid) return;
+                return app.firestore().collection('clients').doc(c.portalUid).set(_fbClientPayload(c), { merge: true })
+                    .then(function() { _fbSyncStatePut(tk.id, { h: tk.h, ok: true, at: new Date().toISOString() }); })
+                    .catch(function(err) {
+                        _fbSyncStatePut(tk.id, { h: '', ok: false, at: new Date().toISOString(), err: (err && (err.code || err.message)) || 'erreur' });
+                        console.warn('[Portail] synchro auto échouée pour ' + tk.id, err);
+                    });
+            });
+        });
+        return chain;
+    }).catch(function(err) {
+        todo.forEach(function(tk) { _fbSyncStatePut(tk.id, { h: '', ok: false, at: new Date().toISOString(), err: (err && (err.code || err.message)) || 'connexion' }); });
+        console.warn('[Portail] synchro auto : connexion staff impossible', err);
+    }).then(function() {
+        _fbAutoRunning = false;
+        _fbSyncStatusRefresh();
+        if (_fbAutoAgain) { _fbAutoAgain = false; window._fbAutoSyncSchedule(1500); }
+    });
+}
+// Texte d'état affiché dans la fiche client
+window._fbSyncStatusHtml = function(c, busy) {
+    if (!c) return '';
+    if (!_fbInit()) return '';
+    if (!c.portalUid) return '🔗 Portail : pas encore d’accès — utilisez « Envoyer le code »';
+    var s = _fbSyncStateGet()[c.id];
+    if (busy) return '<span style="color:#2563eb;font-weight:700;">🔄 Portail : synchronisation…</span>';
+    if (!s) return '<span style="color:#2563eb;font-weight:700;">⏳ Portail : synchronisation en attente</span>';
+    var hhmm = s.at ? new Date(s.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
+    if (!s.ok) return '<span style="color:#dc2626;font-weight:700;" title="' + _pfSafeEsc(s.err || '') + '">⚠️ Portail : échec de synchro (' + hhmm + ') — nouvel essai automatique</span>';
+    if (s.h !== _fbPayloadHash(c)) return '<span style="color:#2563eb;font-weight:700;">⏳ Portail : mise à jour en attente</span>';
+    return '<span style="color:#059669;font-weight:700;">✅ Portail synchronisé · ' + hhmm + '</span>';
+};
+function _fbSyncStatusRefresh(busy) {
+    var el = document.getElementById('lty-portal-sync-status');
+    if (!el) return;
+    var c = find(el.getAttribute('data-id'));
+    el.innerHTML = window._fbSyncStatusHtml(c, busy);
+}
+// Modifications venant de COVO Pro / Caisse Pro (même navigateur) : fiche ou stock → resynchroniser
+window.addEventListener('storage', function(e) {
+    if (e.key === 'covo_loyalty' || e.key === 'covo_products') window._fbAutoSyncSchedule();
+});
+// Au démarrage (rattrape ce qui a changé pendant que Fidélité Pro était fermée) puis toutes les 2 min
+window._fbAutoSyncSchedule(4000);
+setInterval(function() { _fbAutoSyncRun(); }, 120000);
 
 /* ── Modale « Accès portail client » ─────────────────────────────────────
    AMÉLIORATION (demande : pouvoir visualiser le code/mot de passe du client,
