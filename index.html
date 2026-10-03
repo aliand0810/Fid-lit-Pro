@@ -2928,7 +2928,13 @@ window.fbSyncCatalogue = function() {
                 price: +(isKg ? (p.pricePerKg || 0) : (p.price || 0)),
                 promo: +(p.promo || 0),
                 available: (+(p.stock || 0)) > 0,
-                img: img
+                img: img,
+                // Code-barres : indispensable au scanner d'articles du Portail fidélité
+                barcode: p.barcode ? String(p.barcode).trim() : '',
+                // Date de création : alimente le bandeau « Nouvel arrivage » du portail
+                createdAt: p.dateCreated || p.createdAt || '',
+                desc: p.description ? String(p.description).slice(0, 400) : '',
+                brand: p.brand || ''
             };
         });
     produits.forEach(function(p) { if (categories.indexOf(p.category) === -1) categories.push(p.category); });
