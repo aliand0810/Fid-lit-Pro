@@ -3059,8 +3059,13 @@ function _fbResvPayload(c) {
     try { (JSON.parse(localStorage.getItem('covo_products') || '[]') || []).forEach(function(p){ pm[String(p.id)] = p; }); } catch(e) {}
     var all = (c.reservations || []).map(function(r){
         var p = pm[String(r.productId)], s = p ? p.stock : null;
-        return { name: r.productName || 'Article', qty: +(r.qty || 0), unitType: r.unitType || 'unit', price: +(r.price || 0),
-                 date: r.date || null, available: (r.decremented !== false) || (s != null && s >= (r.qty || 0)) };
+        var setAside = (r.decremented !== false), inStock = (s != null && s >= (r.qty || 0));
+        // status : format lu par le Portail fidélité — 'ready' = mis de côté par le commerce,
+        // 'available' = en stock (à récupérer), 'waiting' = en attente de réapprovisionnement
+        return { id: r.id, productId: r.productId != null ? r.productId : null,
+                 name: r.productName || 'Article', qty: +(r.qty || 0), unitType: r.unitType || 'unit', price: +(r.price || 0),
+                 date: r.date || null, available: setAside || inStock,
+                 status: setAside ? 'ready' : (inStock ? 'available' : 'waiting') };
     });
     return { list: all.slice(0, 40), tot: all.length, dispo: all.filter(function(x){ return x.available; }).length };
 }
