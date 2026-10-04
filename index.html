@@ -338,6 +338,12 @@
     .lty-row{display:flex;align-items:center;gap:10px;padding:10px 11px;border-radius:10px;cursor:pointer;margin-bottom:4px;border:1.5px solid transparent;transition:all .13s;}
     .lty-row:hover{background:rgba(139,92,246,.07);border-color:rgba(139,92,246,.2);}
     .lty-row.active{background:rgba(139,92,246,.13);border-color:rgba(139,92,246,.38);}
+    .lty-resv-bub{position:absolute;top:-8px;left:-9px;min-width:24px;height:18px;padding:0 5px;border-radius:9px;background:#16a34a;color:#fff;font-size:.6rem;font-weight:900;line-height:18px;text-align:center;white-space:nowrap;box-shadow:0 0 0 2px var(--bg-card,#fff),0 3px 8px rgba(22,163,74,.45);animation:ltyBubPop .5s cubic-bezier(.3,1.6,.5,1);z-index:2;}
+    .lty-resv-bub::after{content:'';position:absolute;inset:0;border-radius:inherit;animation:ltyBubPulse 2s infinite;}
+    .lty-resv-bub.big{top:-6px;left:-10px;min-width:30px;height:22px;line-height:22px;font-size:.72rem;border-radius:11px;}
+    .lty-resv-tag{display:inline-block;margin-left:4px;padding:1px 6px;border-radius:8px;background:rgba(22,163,74,.13);color:#15803d;font-size:.6rem;font-weight:900;vertical-align:middle;}
+    @keyframes ltyBubPop{0%{transform:scale(.3);}60%{transform:scale(1.25);}100%{transform:scale(1);}}
+    @keyframes ltyBubPulse{0%{box-shadow:0 0 0 0 rgba(22,163,74,.55);}70%{box-shadow:0 0 0 8px rgba(22,163,74,0);}100%{box-shadow:0 0 0 0 rgba(22,163,74,0);}}
     .lty-av{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:900;color:white;flex-shrink:0;}
     .lty-row-meta{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:5px;flex-shrink:0;max-width:46%;}
     .lty-badge-chip{font-weight:800;font-size:.62rem;padding:2px 8px;border-radius:11px;white-space:nowrap;line-height:1.55;display:inline-flex;align-items:center;}
@@ -1301,7 +1307,8 @@ function renderList(q){
     var d = lg(); q = (q||'').toLowerCase().trim();
     var list = q ? d.customers.filter(function(c){ return (c.name||'').toLowerCase().indexOf(q)!==-1 || (c.phone&&c.phone.indexOf(q)!==-1); }) : d.customers.slice();
     if (_ltyCatFilterOnly) list = list.filter(function(c){ return !!c.catalogAccess; });
-    list.sort(function(a,b){ return (b.points||0)-(a.points||0); });
+    var _rv = function(c){ return (c.reservations||[]).filter(resvAvail).length; };
+    list.sort(function(a,b){ return (_rv(b)>0?1:0)-(_rv(a)>0?1:0) || (b.points||0)-(a.points||0); });   // réservations disponibles en tête
 
     // Reflète l'état des boutons de filtre / sélection multiple et de la barre d'actions groupées
     var filterBtn = document.getElementById('lty-cat-filter-btn');
@@ -1329,17 +1336,25 @@ function renderList(q){
         var catChip = c.catalogAccess ? '<span class="lty-badge-chip" style="background:rgba(5,150,105,.15);color:#059669;" title="Catalogue autorisé">📦</span>' : '';
         var nbTkt = (c.history||[]).length;
         var last = c.history && c.history.length ? fmtD(c.history[0].date) : '—';
+        // Bulle « disponibles / réservés » sur le client (ex. 5/8)
+        var rTot = (c.reservations||[]).length, rDispo = rTot ? (c.reservations||[]).filter(resvAvail).length : 0;
+        var hasPortal = (c.reservations||[]).some(function(r){ return r.source==='portail'; });
+        var resvBub = rDispo>0
+            ? '<span class="lty-resv-bub" title="'+rDispo+' article(s) réservé(s) disponible(s) sur '+rTot+(hasPortal?' — dont réservations du portail':'')+'">'+rDispo+'/'+rTot+'</span>'
+            : '';
+        var resvChip = (rTot && !rDispo) ? '<span class="lty-badge-chip" style="background:rgba(245,158,11,.15);color:#b45309;" title="Réservations en attente de stock">📦 0/'+rTot+'</span>' : '';
         var checkbox = _ltyMultiMode
             ? '<input type="checkbox" onclick="event.stopPropagation();window.ltyToggleMultiSelect(\''+esc(c.id)+'\',this.checked)" '+(_ltyMultiSelected[c.id]?'checked':'')+' style="width:17px;height:17px;flex-shrink:0;cursor:pointer;margin-right:2px;">'
             : '';
         return '<div class="lty-row'+(c.id===STATE.detailId?' active':'')+'" data-id="'+esc(c.id)+'" onclick="ltySelectClient(\''+esc(c.id)+'\')">'
             +checkbox
-            +'<div class="lty-av">'+esc(ini(c.name))+'</div>'
-            +'<div style="flex:1;min-width:0;"><div style="font-weight:800;font-size:.83rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(c.name)+'</div>'
+            +'<div class="lty-av" style="position:relative;overflow:visible;">'+esc(ini(c.name))+resvBub+'</div>'
+            +'<div style="flex:1;min-width:0;"><div style="font-weight:800;font-size:.83rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(c.name)+(rDispo>0?' <span class="lty-resv-tag">📦 '+rDispo+'/'+rTot+' dispo</span>':'')+'</div>'
             +'<div style="font-size:.67rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+nbTkt+' mouvement(s) · '+last+'</div></div>'
             +'<div class="lty-row-meta">'
             +'<span class="lty-badge-chip" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);color:#fff;">⭐ '+(c.points||0)+'</span>'
             +creditChip
+            +resvChip
             +catChip
             +'</div></div>';
     }).join('');
@@ -1474,10 +1489,11 @@ function renderCockpit(c){
     });
     echReste = +echReste.toFixed(2);
     var resvTot = (c.reservations||[]).length, resvDispo = (c.reservations||[]).filter(resvAvail).length;
+    var resvBubTop = resvDispo>0 ? '<span class="lty-resv-bub big" title="'+resvDispo+' article(s) réservé(s) disponible(s) sur '+resvTot+'">'+resvDispo+'/'+resvTot+'</span>' : '';
 
     var html = ''
         +'<div style="display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;">'
-        +'<div style="width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:flex;align-items:center;justify-content:center;font-size:1.15rem;font-weight:900;color:#fff;flex-shrink:0;box-shadow:0 4px 12px rgba(124,58,237,.3);">'+esc(ini(c.name))+'</div>'
+        +'<div style="width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:flex;align-items:center;justify-content:center;font-size:1.15rem;font-weight:900;color:#fff;flex-shrink:0;box-shadow:0 4px 12px rgba(124,58,237,.3);position:relative;">'+esc(ini(c.name))+resvBubTop+'</div>'
         +'<div style="flex:1;min-width:160px;">'
         +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
         +'<span style="font-weight:900;font-size:1.08rem;">'+esc(c.name)+'</span>'
