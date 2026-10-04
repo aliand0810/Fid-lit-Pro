@@ -35,6 +35,10 @@
    3) Fournit les outils communs : empreinte de contenu (anti-doublon),
       resume chiffre de la sauvegarde (proprietes Drive), garde anti-perte
       multi-appareils, verrou inter-onglets, relais entre apps.
+   4) Admin-Developpeur : sauvegarde Drive AUTOMATIQUE desactivee par defaut a
+      chaque connexion (cle "covo_dev_autosave"), activable a la demande. Les
+      donnees restent enregistrees tout de suite sur l'appareil et "en attente"
+      jusqu'a une sauvegarde manuelle ou la reactivation de l'automatique.
    ========================================================================== */
 (function(){
     if (window.CovoSync) return;
@@ -54,12 +58,13 @@
     DATA_KEYS.forEach(function(k){ KEYSET[k] = 1; });
 
     var PENDING = 'covo_drive_pending', LOCK = 'covo_drive_lock', FPK = 'gdrive_last_fp', DEVK = 'covo_device_id';
+    var AUTOK = 'covo_dev_autosave', CUK = 'covo_current_user';
     var APP_NAMES = { covo:'COVO Pro', gestion:'Gestion Pro', caisse:'Caisse Pro', fidelite:'Fid\u00e9lit\u00e9 Pro',
         finances:'Finances Pro', investissement:'Approvisionnement Pro', historique:'Historique Pro',
         clotures:'Cl\u00f4tures Pro', admin:'Admin Pro' };
 
     var S = { muted: 0, app: 'covo', tab: 'T' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-              onDirty: null, onRelay: null, relayT: null, hb: null };
+              onDirty: null, onRelay: null, onPaused: null, relayT: null, hb: null };
 
     function rget(k) { try { return _get.call(LS, k); } catch(e) { return null; } }
     function rset(k, v) { try { _set.call(LS, k, v); } catch(e) {} }
@@ -70,6 +75,24 @@
         if (!d) { d = 'D' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); rset(DEVK, d); }
         return d;
     }
+    // ---- Admin-Developpeur : sauvegarde automatique au choix (desactivee par defaut a la connexion) ----
+    function isDevUser(u) { return !!(u && (u.isMaster || u.id === 'USR-MASTER')); }
+    function curUser() { try { return JSON.parse(rget(CUK) || 'null'); } catch(e) { return null; } }
+    function devAutoOn() { return rget(AUTOK) === '1'; }
+    function autoAllowed() { return !isDevUser(curUser()) || devAutoOn(); }
+    function fire(name, detail) {
+        try { window.dispatchEvent(new CustomEvent(name, { detail: detail || {} })); } catch(e) {}
+    }
+    function notifyPaused() {
+        if (typeof S.onPaused === 'function') { try { S.onPaused(); } catch(e) {} }
+        fire('covo-autosave-paused');
+    }
+    function setDevAuto(on) {
+        rset(AUTOK, on ? '1' : '0');
+        fire('covo-autosave-change', { on: !!on });
+        // Reactivee : les modifications en attente partent tout de suite
+        if (on && rget(PENDING) && typeof S.onDirty === 'function') { try { S.onDirty('autosave-on'); } catch(e) {} }
+    }
     function isMuted() { return S.muted > 0 || window._restoreInProgress === true || window._covoSyncMute === true; }
 
     function markDirty(key) {
@@ -77,14 +100,26 @@
         rset(PENDING, now);
         rset('covo_last_local_change', now);
         if (typeof S.onDirty === 'function') { try { S.onDirty(key); } catch(e) {} }
+        if (!autoAllowed()) notifyPaused();
     }
 
     // ---- Interception : toute ecriture qui CHANGE une donnee metier = modification ----
     SP.setItem = function(k, v) {
         var watch = (this === LS) && KEYSET[k] === 1 && !isMuted();
         var before = watch ? rget(k) : null;
+        var cuBefore = (this === LS && k === CUK) ? rget(CUK) : null;
         var r = _set.apply(this, arguments);
         if (watch) { try { if (rget(k) !== before) markDirty(k); } catch(e) {} }
+        if (this === LS && k === CUK) {
+            // Nouvelle connexion en Admin-Developpeur => sauvegarde automatique Drive DESACTIVEE par defaut
+            // (une simple mise a jour de la session du meme compte, ex. rechargement de page, ne change rien)
+            try {
+                var prevU = null; try { prevU = JSON.parse(cuBefore || 'null'); } catch(e2) {}
+                var newU = curUser();
+                if (isDevUser(newU) && !isDevUser(prevU)) rset(AUTOK, '0');
+                if (rget(CUK) !== cuBefore) fire('covo-autosave-change', { on: devAutoOn() });
+            } catch(e) {}
+        }
         return r;
     };
     SP.removeItem = function(k) {
@@ -92,6 +127,7 @@
         var before = watch ? rget(k) : null;
         var r = _rem.apply(this, arguments);
         if (watch && before !== null) { try { markDirty(k); } catch(e) {} }
+        if (this === LS && k === CUK) fire('covo-autosave-change', { on: devAutoOn() }); // deconnexion
         return r;
     };
 
@@ -228,12 +264,18 @@
         S.relayT = setTimeout(function() {
             var p = rget(PENDING);
             if (!p || typeof S.onRelay !== 'function') return;
+            if (!autoAllowed()) { notifyPaused(); return; } // Admin-Developpeur : envoi manuel uniquement
             if (Date.now() - Date.parse(p) < 15000) { scheduleRelay(); return; }
             try { S.onRelay('relais'); } catch(e) {}
         }, 20000 + Math.floor(Math.random() * 10000));
     }
     window.addEventListener('storage', function(e) {
         if (e.key === PENDING && e.newValue) scheduleRelay();
+        if (e.key === AUTOK) {
+            fire('covo-autosave-change', { on: e.newValue === '1' });
+            if (e.newValue === '1' && rget(PENDING)) scheduleRelay();
+        }
+        if (e.key === CUK) fire('covo-autosave-change', { on: devAutoOn() });
     });
 
     function init(opts) {
@@ -241,11 +283,12 @@
         if (opts.app) S.app = opts.app;
         if (typeof opts.onDirty === 'function') S.onDirty = opts.onDirty;
         if (typeof opts.onRelay === 'function') S.onRelay = opts.onRelay;
+        if (typeof opts.onPaused === 'function') S.onPaused = opts.onPaused;
         if (!S.hb) {
             // Filet de securite : toute modification restee en attente > 90 s est renvoyee
             S.hb = setInterval(function() {
                 var p = rget(PENDING);
-                if (p && typeof S.onRelay === 'function' && (Date.now() - Date.parse(p)) > 90000) {
+                if (p && typeof S.onRelay === 'function' && (Date.now() - Date.parse(p)) > 90000 && autoAllowed()) {
                     try { S.onRelay('reprise'); } catch(e) {}
                 }
             }, 60000);
@@ -260,7 +303,9 @@
         fingerprint: fingerprint, serialize: serialize, finalize: finalize, summary: summary, guard: guard,
         pending: pending, clearPending: clearPending, tryLock: tryLock, unlock: unlock, recordSaved: recordSaved,
         lastFp: function() { return rget(FPK); }, init: init, muteOn: muteOn, muteOff: muteOff,
-        appName: function(code) { return APP_NAMES[code] || code || ''; }
+        appName: function(code) { return APP_NAMES[code] || code || ''; },
+        autoAllowed: autoAllowed, devAutoOn: devAutoOn, setDevAuto: setDevAuto,
+        isDevUser: function() { return isDevUser(curUser()); }
     };
 })();
 </script>
@@ -338,14 +383,13 @@
     .lty-row{display:flex;align-items:center;gap:10px;padding:10px 11px;border-radius:10px;cursor:pointer;margin-bottom:4px;border:1.5px solid transparent;transition:all .13s;}
     .lty-row:hover{background:rgba(139,92,246,.07);border-color:rgba(139,92,246,.2);}
     .lty-row.active{background:rgba(139,92,246,.13);border-color:rgba(139,92,246,.38);}
-    .lty-resv-bub{position:absolute;top:-8px;left:-9px;min-width:24px;height:18px;padding:0 5px;border-radius:9px;background:#16a34a;color:#fff;font-size:.6rem;font-weight:900;line-height:18px;text-align:center;white-space:nowrap;box-shadow:0 0 0 2px var(--bg-card,#fff),0 3px 8px rgba(22,163,74,.45);animation:ltyBubPop .5s cubic-bezier(.3,1.6,.5,1);z-index:2;}
-    .lty-resv-bub::after{content:'';position:absolute;inset:0;border-radius:inherit;animation:ltyBubPulse 2s infinite;}
-    .lty-resv-bub.big{top:-6px;left:-10px;min-width:30px;height:22px;line-height:22px;font-size:.72rem;border-radius:11px;}
-    .lty-resv-tag{display:inline-block;margin-left:4px;padding:1px 6px;border-radius:8px;background:rgba(22,163,74,.13);color:#15803d;font-size:.6rem;font-weight:900;vertical-align:middle;}
-    @keyframes ltyBubPop{0%{transform:scale(.3);}60%{transform:scale(1.25);}100%{transform:scale(1);}}
-    @keyframes ltyBubPulse{0%{box-shadow:0 0 0 0 rgba(22,163,74,.55);}70%{box-shadow:0 0 0 8px rgba(22,163,74,0);}100%{box-shadow:0 0 0 0 rgba(22,163,74,0);}}
-    .lty-av{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:900;color:white;flex-shrink:0;}
+    .lty-av{position:relative;width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:900;color:white;flex-shrink:0;}
     .lty-row-meta{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:5px;flex-shrink:0;max-width:46%;}
+    .lty-resv-bubble{display:inline-flex;align-items:center;gap:3px;padding:1px 8px;border-radius:20px;font-size:.63rem;font-weight:800;white-space:nowrap;flex-shrink:0;line-height:1.6;cursor:help;}
+    .lty-resv-bubble.has-dispo{animation:ltyResvPulse 2.2s ease-in-out infinite;}
+    @keyframes ltyResvPulse{0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,.35);}50%{box-shadow:0 0 0 4px rgba(5,150,105,0);}}
+    .lty-av-dot{position:absolute;top:-5px;right:-6px;min-width:18px;height:18px;padding:0 4px;border-radius:9px;color:#fff;font-size:.6rem;font-weight:900;display:flex;align-items:center;justify-content:center;border:2px solid var(--bg-card,#fff);box-sizing:border-box;}
+    @media (prefers-reduced-motion: reduce){.lty-resv-bubble.has-dispo{animation:none;}}
     .lty-badge-chip{font-weight:800;font-size:.62rem;padding:2px 8px;border-radius:11px;white-space:nowrap;line-height:1.55;display:inline-flex;align-items:center;}
     #lty-detail-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);gap:8px;padding:40px 10px;}
     #lty-detail-view{display:none;flex-direction:column;flex:1;overflow:hidden;}
@@ -457,7 +501,6 @@
                 <button onclick="ltyOpenWaBroadcast()" style="background:#25D366;border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;">💬 WhatsApp</button>
                 <button class="cp-admin-only" onclick="ltyOpenSettings()" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;">⚙️ Points</button>
                 <button class="cp-admin-only" onclick="fbSyncCatalogue()" id="fb-sync-cat-btn" title="Met à jour la liste des produits visible par les clients dans Portail fidélité" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;position:relative;">🛒 Sync catalogue<span id="fb-sync-cat-dirty-dot" title="Des changements non synchronisés existent" style="display:none;position:absolute;top:-4px;right:-4px;width:11px;height:11px;border-radius:50%;background:#f59e0b;border:2px solid #fff;"></span></button>
-                <button class="cp-admin-only" onclick="fbImportPortalReservations(true)" id="fb-resv-btn" title="Récupérer les réservations faites par les clients dans leur Portail fidélité" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:#fff;border-radius:10px;padding:8px 13px;font-weight:800;font-size:.8rem;cursor:pointer;position:relative;">📥 Réservations portail<span id="fb-resv-new" style="display:none;position:absolute;top:-7px;right:-7px;min-width:20px;height:20px;padding:0 5px;border-radius:10px;background:#16a34a;color:#fff;font-size:.68rem;font-weight:900;line-height:20px;text-align:center;border:2px solid #fff;"></span></button>
                 <button onclick="ltyOpenClientModal(null)" style="background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.4);color:white;border-radius:10px;padding:8px 14px;font-weight:800;font-size:.82rem;cursor:pointer;">➕ Nouveau client</button>
             </div>
         </div>
@@ -1042,7 +1085,12 @@ window.cpDriveBackupNow = async function(silent, trigger) {
         if (!silent && typeof showScanToast === 'function') showScanToast('👁️ Mode consultation seule — sauvegarde désactivée par l\'Admin-Développeur', 'info');
         return 'readonly';
     }
-    // NB : l'Admin-Développeur est désormais sauvegardé automatiquement comme tous les comptes.
+    // Admin-Développeur : sauvegarde AUTOMATIQUE désactivée par défaut à la connexion (choix dans COVO Pro).
+    // Seul l'envoi automatique est suspendu : « Sauvegarder maintenant » fonctionne toujours.
+    if (silent && CS && CS.autoAllowed && !CS.autoAllowed()) {
+        if (typeof cpSetDriveStatus === 'function') cpSetDriveStatus(_cpConnected, '⏸️ Sauvegarde auto désactivée (Admin-Développeur) — « Sauvegarder maintenant » pour envoyer');
+        return 'paused';
+    }
     if (!_cpConnected) {
         if (!silent) showScanToast('⚠️ Connectez Google Drive d\'abord — vos modifications restent en attente', 'info');
         _cpShowPendingStatus();
@@ -1208,7 +1256,7 @@ var LK = 'covo_loyalty';
 var PK = 'covo_products';
 
 function lg(){ try{ return JSON.parse(localStorage.getItem(LK)||'null') || {customers:[],settings:{pointsPerEuro:1,rewardThreshold:1,rewardValue:0.05}}; }catch(e){ return {customers:[],settings:{pointsPerEuro:1,rewardThreshold:1,rewardValue:0.05}}; } }
-function ls(d){ localStorage.setItem(LK, JSON.stringify(d)); if (typeof window.cpDriveMarkDirty==='function') window.cpDriveMarkDirty(); }
+function ls(d){ localStorage.setItem(LK, JSON.stringify(d)); if (typeof window.cpDriveMarkDirty==='function') window.cpDriveMarkDirty(); if (typeof window._fbAutoSyncSchedule==='function') window._fbAutoSyncSchedule(); }
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function ini(n){ n=String(n||'').trim(); if(!n) return '?'; var p=n.split(/\s+/); return ((p[0][0]||'')+(p[1]?p[1][0]:'')).toUpperCase(); }
 function find(id){ return lg().customers.find(function(x){ return x.id===id; }); }
@@ -1249,7 +1297,7 @@ function genBarcode(name, phone, customers, selfId){
 
 /* ── Produits (catalogue partagé, lecture/écriture directe) ── */
 function getProducts(){ try{ return JSON.parse(localStorage.getItem(PK)||'[]'); }catch(e){ return []; } }
-function saveProducts(list){ localStorage.setItem(PK, JSON.stringify(list)); if (typeof window.cpDriveMarkDirty==='function') window.cpDriveMarkDirty(); }
+function saveProducts(list){ localStorage.setItem(PK, JSON.stringify(list)); if (typeof window.cpDriveMarkDirty==='function') window.cpDriveMarkDirty(); if (typeof window._fbAutoSyncSchedule==='function') window._fbAutoSyncSchedule(); }
 function findProduct(id){ return getProducts().find(function(p){ return String(p.id)===String(id); }); }
 function productSearch(q){
     q=(q||'').toLowerCase().trim(); if(!q) return [];
@@ -1307,8 +1355,7 @@ function renderList(q){
     var d = lg(); q = (q||'').toLowerCase().trim();
     var list = q ? d.customers.filter(function(c){ return (c.name||'').toLowerCase().indexOf(q)!==-1 || (c.phone&&c.phone.indexOf(q)!==-1); }) : d.customers.slice();
     if (_ltyCatFilterOnly) list = list.filter(function(c){ return !!c.catalogAccess; });
-    var _rv = function(c){ return (c.reservations||[]).filter(resvAvail).length; };
-    list.sort(function(a,b){ return (_rv(b)>0?1:0)-(_rv(a)>0?1:0) || (b.points||0)-(a.points||0); });   // réservations disponibles en tête
+    list.sort(function(a,b){ return (b.points||0)-(a.points||0); });
 
     // Reflète l'état des boutons de filtre / sélection multiple et de la barre d'actions groupées
     var filterBtn = document.getElementById('lty-cat-filter-btn');
@@ -1330,31 +1377,26 @@ function renderList(q){
         el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:.8rem;">'+(q?'Aucun résultat':(_ltyCatFilterOnly?'Aucun client autorisé au catalogue':'Aucun client — cliquez « Nouveau client »'))+'</div>';
         return;
     }
+    var _pm = _ltyProdMap();
     el.innerHTML = list.map(function(c){
         var due = creditOf(c);
+        var rs = resvSummary(c, _pm);
+        var avDot = rs.tot ? '<span class="lty-av-dot" style="background:'+(rs.dispo?'#059669':'#d97706')+';" title="'+(rs.dispo?(rs.dispo+' réservation(s) disponible(s)'):(rs.tot+' réservation(s) en attente de stock'))+'">'+(rs.dispo||rs.tot)+'</span>' : '';
         var creditChip = due>0 ? '<span class="lty-badge-chip" style="background:rgba(217,119,6,.16);color:#b45309;">📒 '+due.toFixed(2)+'€</span>' : '';
         var catChip = c.catalogAccess ? '<span class="lty-badge-chip" style="background:rgba(5,150,105,.15);color:#059669;" title="Catalogue autorisé">📦</span>' : '';
         var nbTkt = (c.history||[]).length;
         var last = c.history && c.history.length ? fmtD(c.history[0].date) : '—';
-        // Bulle « disponibles / réservés » sur le client (ex. 5/8)
-        var rTot = (c.reservations||[]).length, rDispo = rTot ? (c.reservations||[]).filter(resvAvail).length : 0;
-        var hasPortal = (c.reservations||[]).some(function(r){ return r.source==='portail'; });
-        var resvBub = rDispo>0
-            ? '<span class="lty-resv-bub" title="'+rDispo+' article(s) réservé(s) disponible(s) sur '+rTot+(hasPortal?' — dont réservations du portail':'')+'">'+rDispo+'/'+rTot+'</span>'
-            : '';
-        var resvChip = (rTot && !rDispo) ? '<span class="lty-badge-chip" style="background:rgba(245,158,11,.15);color:#b45309;" title="Réservations en attente de stock">📦 0/'+rTot+'</span>' : '';
         var checkbox = _ltyMultiMode
             ? '<input type="checkbox" onclick="event.stopPropagation();window.ltyToggleMultiSelect(\''+esc(c.id)+'\',this.checked)" '+(_ltyMultiSelected[c.id]?'checked':'')+' style="width:17px;height:17px;flex-shrink:0;cursor:pointer;margin-right:2px;">'
             : '';
         return '<div class="lty-row'+(c.id===STATE.detailId?' active':'')+'" data-id="'+esc(c.id)+'" onclick="ltySelectClient(\''+esc(c.id)+'\')">'
             +checkbox
-            +'<div class="lty-av" style="position:relative;overflow:visible;">'+esc(ini(c.name))+resvBub+'</div>'
-            +'<div style="flex:1;min-width:0;"><div style="font-weight:800;font-size:.83rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(c.name)+(rDispo>0?' <span class="lty-resv-tag">📦 '+rDispo+'/'+rTot+' dispo</span>':'')+'</div>'
+            +'<div class="lty-av">'+esc(ini(c.name))+avDot+'</div>'
+            +'<div style="flex:1;min-width:0;"><div style="display:flex;align-items:center;gap:6px;min-width:0;"><span style="font-weight:800;font-size:.83rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;">'+esc(c.name)+'</span>'+resvBubbleHtml(rs)+'</div>'
             +'<div style="font-size:.67rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+nbTkt+' mouvement(s) · '+last+'</div></div>'
             +'<div class="lty-row-meta">'
             +'<span class="lty-badge-chip" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);color:#fff;">⭐ '+(c.points||0)+'</span>'
             +creditChip
-            +resvChip
             +catChip
             +'</div></div>';
     }).join('');
@@ -1477,6 +1519,35 @@ function tileHtml(ico,val,label,col){
     return '<div class="lty-tile"><div class="l">'+ico+' '+label+'</div><div class="v" style="color:'+(col||'var(--text-main)')+';">'+val+'</div></div>';
 }
 function resvAvail(r){ var p=findProduct(r.productId); var s=p?p.stock:null; return (r.decremented!==false) || (s!=null && s>=(r.qty||0)); }
+// Résumé des réservations d'un client : nombre d'articles réservés et combien sont disponibles.
+// prodMap (optionnel) évite de relire le catalogue pour chaque réservation quand on affiche toute la liste.
+function _ltyProdMap(){ var m = {}; getProducts().forEach(function(p){ m[String(p.id)] = p; }); return m; }
+function resvSummary(c, prodMap){
+    var resv = c.reservations || [];
+    var out = { tot: resv.length, dispo: 0, lines: [] };
+    resv.forEach(function(r){
+        var av;
+        if (prodMap) { var p = prodMap[String(r.productId)]; var s = p ? p.stock : null; av = (r.decremented!==false) || (s!=null && s>=(r.qty||0)); }
+        else av = resvAvail(r);
+        if (av) out.dispo++;
+        out.lines.push((av ? '✅ ' : '⏳ ') + (r.productName || 'Article') + ' ' + (r.unitType==='kg' ? (r.qty+' kg') : ('×'+(r.qty||1))));
+    });
+    return out;
+}
+// Bulle d'information affichée à côté du nom du client
+function resvBubbleHtml(s, big){
+    if (!s || !s.tot) return '';
+    var none = s.dispo === 0, all = s.dispo === s.tot;
+    var bg  = none ? 'rgba(245,158,11,.16)' : 'rgba(5,150,105,.15)';
+    var col = none ? '#b45309' : '#047857';
+    // Liste (colonne étroite) : version courte « 📦 8 · ✅ 5 » pour laisser le nom lisible ; fiche : texte complet
+    var txt = big
+        ? ('📦 ' + s.tot + ' réservé' + (s.tot>1?'s':'') + ' · ' + (none ? '⏳ aucun dispo' : ('✅ ' + (all ? (s.tot>1 ? 'tous dispo' : 'dispo') : (s.dispo + ' dispo')))))
+        : ('📦 ' + s.tot + ' · ' + (none ? '⏳ 0' : ('✅ ' + s.dispo)));
+    var tip = 'Ce client a réservé ' + s.tot + ' article' + (s.tot>1?'s':'') + ' — ' + s.dispo + ' disponible' + (s.dispo>1?'s':'') + ' :\n' + s.lines.join('\n');
+    return '<span class="lty-resv-bubble'+(s.dispo?' has-dispo':'')+'" title="'+esc(tip)+'" style="background:'+bg+';color:'+col+';'
+        + (big ? 'font-size:.74rem;padding:3px 11px;' : '') + '">' + txt + '</span>';
+}
 
 function renderCockpit(c){
     var top = document.getElementById('lty-detail-top'); if(!top) return;
@@ -1489,19 +1560,20 @@ function renderCockpit(c){
     });
     echReste = +echReste.toFixed(2);
     var resvTot = (c.reservations||[]).length, resvDispo = (c.reservations||[]).filter(resvAvail).length;
-    var resvBubTop = resvDispo>0 ? '<span class="lty-resv-bub big" title="'+resvDispo+' article(s) réservé(s) disponible(s) sur '+resvTot+'">'+resvDispo+'/'+resvTot+'</span>' : '';
 
     var html = ''
         +'<div style="display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;">'
-        +'<div style="width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:flex;align-items:center;justify-content:center;font-size:1.15rem;font-weight:900;color:#fff;flex-shrink:0;box-shadow:0 4px 12px rgba(124,58,237,.3);position:relative;">'+esc(ini(c.name))+resvBubTop+'</div>'
+        +'<div style="width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:flex;align-items:center;justify-content:center;font-size:1.15rem;font-weight:900;color:#fff;flex-shrink:0;box-shadow:0 4px 12px rgba(124,58,237,.3);">'+esc(ini(c.name))+'</div>'
         +'<div style="flex:1;min-width:160px;">'
         +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
         +'<span style="font-weight:900;font-size:1.08rem;">'+esc(c.name)+'</span>'
         +'<span style="background:'+t.bg+';color:'+t.c+';padding:2px 10px;border-radius:20px;font-weight:900;font-size:.72rem;">'+t.ico+' '+t.n+'</span>'
+        +resvBubbleHtml(resvSummary(c), true)
         +(c.costPriceClient?'<span class="lty-badge-chip" style="background:rgba(245,158,11,.15);color:#b45309;">🏷️ Prix d\'achat</span>':'')
         +'</div>'
         +'<div style="font-size:.72rem;color:var(--text-muted);margin-top:3px;">'+(c.phone?'📞 '+esc(c.phone)+'  ':'')+(c.barcode?'🎫 '+esc(c.barcode):(c.email?'✉️ '+esc(c.email):''))+'</div>'
         +'<div style="display:inline-flex;align-items:center;gap:6px;margin-top:7px;background:'+h.bg+';color:'+h.c+';padding:4px 11px;border-radius:20px;font-weight:800;font-size:.74rem;">'+h.dot+' '+h.txt+'</div>'
+        +'<div id="lty-portal-sync-status" data-id="'+esc(c.id)+'" style="font-size:.68rem;color:var(--text-muted);margin-top:6px;">'+(typeof window._fbSyncStatusHtml==='function' ? window._fbSyncStatusHtml(c) : '')+'</div>'
         +'</div>'
         +'<div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;">'
         +'<button onclick="ltyOpenClientModal(\''+esc(c.id)+'\')" style="background:rgba(245,158,11,.12);color:#d97706;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">✏️ Modifier</button>'
@@ -1741,8 +1813,6 @@ function renderApercuTab(c){
             var dt = fmtD(r.date);
             var av = resvAvail(r);
             var statut = (r.pending && !av) ? '<span style="color:#b45309;font-weight:800;"> · ⏳ en attente de stock</span>' : ((r.pending && av) ? '<span style="color:#059669;font-weight:800;"> · ✅ disponible</span>' : '');
-            if (r.source === 'portail') statut += ' <span style="background:rgba(37,99,235,.12);color:#2563eb;padding:1px 7px;border-radius:10px;font-weight:800;font-size:.62rem;">🌐 Portail</span>';
-            if (r.pickupDate) statut += ' <span style="background:rgba(245,158,11,.15);color:#b45309;padding:1px 7px;border-radius:10px;font-weight:800;font-size:.62rem;">📅 retrait '+fmtD(r.pickupDate)+'</span>';
             var waBtn = (av && !c.noWhatsapp) ? '<button class="lty-btn small" style="background:#25D366;" onclick="ltyResvNotify(\''+esc(c.id)+'\','+r.id+',\'wa\')">💬</button>' : '';
             var smsBtn = (av && !c.noWhatsapp) ? '<button class="lty-btn small" style="background:#1565c0;" onclick="ltyResvNotify(\''+esc(c.id)+'\','+r.id+',\'sms\')">📱</button>' : '';
             return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px dashed var(--border-color);">'
@@ -2399,7 +2469,6 @@ window.ltyResvConfirm = function(){
     toast(decremented ? ('📦 Article réservé · stock restant '+(available-qty)) : ('⏳ Réservation enregistrée — en attente de stock (disponible : '+available+')'),'success');
     var cid = _resvClientId;
     ltyCloseResv();
-    _fbResvPushClient(cid);
     refreshAll();
     ltySelectClient(cid);
 };
@@ -2413,7 +2482,6 @@ window.ltyResvCancel = function(clientId, resvId){
     d.customers[idx].reservations = (d.customers[idx].reservations||[]).filter(function(x){ return String(x.id)!==String(resvId); });
     ls(d);
     toast(wasDecr?'↩️ Réservation annulée · stock restitué':'↩️ Réservation annulée','success');
-    _fbResvPushClient(clientId);
     refreshAll(); ltySelectClient(clientId);
 };
 window.ltyResvComplete = function(clientId, resvId){
@@ -2429,7 +2497,6 @@ window.ltyResvComplete = function(clientId, resvId){
     d.customers[idx].reservations = (d.customers[idx].reservations||[]).filter(function(x){ return String(x.id)!==String(resvId); });
     ls(d);
     toast('✔️ Réservation clôturée','success');
-    _fbResvPushClient(clientId);
     refreshAll(); ltySelectClient(clientId);
 };
 function _msgForResv(c,r){
@@ -2636,7 +2703,7 @@ function renderDashResv(){
     rows.forEach(function(x){
         var unit = x.r.unitType==='kg' ? (x.r.qty+' kg') : ('×'+x.r.qty);
         var st = x.av ? '<span style="color:#059669;font-weight:800;">✅ Disponible</span>' : '<span style="color:#b45309;font-weight:700;">⏳ En attente</span>';
-        h += '<tr><td style="font-weight:700;">'+esc(x.c.name||'')+(x.r.source==='portail'?' <span style="background:rgba(37,99,235,.12);color:#2563eb;padding:1px 6px;border-radius:9px;font-size:.6rem;font-weight:800;">🌐 Portail</span>':'')+'</td><td>'+esc(x.r.productName||'')+' <span style="color:var(--text-muted);">'+unit+'</span><br><span style="font-size:.66rem;color:var(--text-muted);">'+fmtD(x.r.date)+(x.r.pickupDate?(' · <b style="color:#b45309;">📅 retrait '+fmtD(x.r.pickupDate)+'</b>'):'')+'</span></td>'
+        h += '<tr><td style="font-weight:700;">'+esc(x.c.name||'')+'</td><td>'+esc(x.r.productName||'')+' <span style="color:var(--text-muted);">'+unit+'</span><br><span style="font-size:.66rem;color:var(--text-muted);">'+fmtD(x.r.date)+'</span></td>'
             + '<td>'+st+'</td><td style="text-align:right;"><button class="lty-btn small secondary" onclick="ltyDashGoClient(\''+esc(x.c.id)+'\')">Ouvrir ›</button></td></tr>';
     });
     return h+'</tbody></table></div>';
@@ -2752,11 +2819,6 @@ window.creditOf = creditOf;
 window.limitOf = limitOf;
 window.histLabel = histLabel;
 window.cpRefreshUserBadge = cpRefreshUserBadge;
-// Réservations du portail client (module Firebase plus bas)
-window.findProduct = findProduct;
-window.adjustStock = adjustStock;
-window.resvAvail = resvAvail;
-window.refreshAll = refreshAll;
 
 })();
 </script>
@@ -2955,13 +3017,7 @@ window.fbSyncCatalogue = function() {
                 price: +(isKg ? (p.pricePerKg || 0) : (p.price || 0)),
                 promo: +(p.promo || 0),
                 available: (+(p.stock || 0)) > 0,
-                img: img,
-                // Code-barres : indispensable au scanner d'articles du Portail fidélité
-                barcode: p.barcode ? String(p.barcode).trim() : '',
-                // Date de création : alimente le bandeau « Nouvel arrivage » du portail
-                createdAt: p.dateCreated || p.createdAt || '',
-                desc: p.description ? String(p.description).slice(0, 400) : '',
-                brand: p.brand || ''
+                img: img
             };
         });
     produits.forEach(function(p) { if (categories.indexOf(p.category) === -1) categories.push(p.category); });
@@ -2994,150 +3050,6 @@ window.fbSyncCatalogue = function() {
         if (btn) { btn.disabled = false; btn.textContent = prevTxt; }
     });
 };
-
-
-/* ════════════════════════════════════════════════════════════
-   RÉSERVATIONS DU PORTAIL CLIENT → FIDÉLITÉ PRO
-   Le client réserve des articles dans son Portail fidélité ; le portail
-   écrit la liste dans Firestore (reservations/{uid du client}). Ici on la
-   lit (compte "staff") et chaque nouvel article devient une réservation
-   NORMALE sur la fiche du client lié (même logique que « 📦 Réserver un
-   article » : stock décrémenté s'il est suffisant, sinon « en attente de
-   stock »), marquée 🌐 Portail, avec la date de retrait souhaitée.
-   - Le lien client ↔ portail se fait par c.portalUid (sinon par n° de carte).
-   - Un article retiré par le client dans son portail = réservation annulée
-     ici (stock restitué si besoin).
-   - Chaque article n'est importé qu'UNE fois (c.portalResvKeys), même après
-     clôture/annulation en boutique.
-   - Après import, la fiche Firestore du client est mise à jour : le portail
-     voit alors « reçue / prête » et retire les réservations clôturées.
-   Import automatique à l'ouverture puis toutes les 60 s (onglet visible),
-   et à la demande via « 📥 Réservations portail ».
-   ════════════════════════════════════════════════════════════ */
-var FB_RESV_POLL_MS = 60000;
-var _fbResvBusy = false, _fbResvNewCount = 0, _fbResvRulesWarned = false;
-function _fbResvPushClient(clientId) {
-    var c = find(clientId);
-    if (!c || !c.portalUid || typeof window._fbSyncClientPortal !== 'function') return;
-    window._fbSyncClientPortal(clientId);
-}
-function _fbResvBadge() {
-    var b = document.getElementById('fb-resv-new');
-    if (!b) return;
-    b.textContent = _fbResvNewCount > 99 ? '99+' : _fbResvNewCount;
-    b.style.display = _fbResvNewCount > 0 ? 'block' : 'none';
-}
-window.fbImportPortalReservations = function(manual) {
-    var app = _fbInit();
-    if (!app) { if (manual) toast('⚠️ Firebase non configuré — voir GUIDE_PORTAIL_FIDELITE.md', 'error'); return Promise.resolve(0); }
-    if (_fbResvBusy) return Promise.resolve(0);
-    _fbResvBusy = true;
-    if (manual) { _fbResvNewCount = 0; _fbResvBadge(); }
-    var btn = document.getElementById('fb-resv-btn');
-    return _fbStaffSignIn().then(function() {
-        return app.firestore().collection('reservations').get();
-    }).then(function(snap) {
-        var d = lg(), added = 0, cancelled = 0, updated = 0, touched = {}, names = [], nDocs = 0, nItems = 0, unknown = [];
-        snap.forEach(function(doc) {
-            var data = doc.data() || {}, uid = doc.id;
-            nDocs++; nItems += (Array.isArray(data.items) ? data.items.length : 0);
-            var idx = d.customers.findIndex(function(x){ return x.portalUid === uid; });
-            if (idx === -1 && data.barcode) idx = d.customers.findIndex(function(x){ return x.barcode && String(x.barcode).toUpperCase() === String(data.barcode).toUpperCase(); });
-            if (idx === -1) { if ((data.items || []).length) unknown.push((data.clientName || '?') + (data.barcode ? ' (' + data.barcode + ')' : '')); return; }   // client inconnu sur ce poste
-            if (d.customers[idx].portalUid !== uid && !d.customers[idx].portalUid) d.customers[idx].portalUid = uid;   // lien retrouvé par n° de carte
-            var c = d.customers[idx];
-            if (!c.reservations) c.reservations = [];
-            if (!Array.isArray(c.portalResvKeys)) c.portalResvKeys = [];
-            var items = Array.isArray(data.items) ? data.items : [];
-            var keys = items.map(function(it){ return String(it.key || ''); }).filter(Boolean);
-            items.forEach(function(it) {
-                var key = String(it.key || ''); if (!key) return;
-                var qty = +it.qty || 1;
-                var existing = c.reservations.find(function(r){ return r.portalKey === key; });
-                if (existing) {   // déjà importée : quantité / date de retrait modifiées par le client ?
-                    var ch = false;
-                    if ((existing.pickupDate || '') !== (it.want || '')) { existing.pickupDate = it.want || ''; ch = true; }
-                    if (+existing.qty !== qty) {
-                        var delta = qty - (+existing.qty || 0);
-                        if (existing.decremented !== false) {
-                            var rs = adjustStock(existing.productId, -delta, 'Réservation portail (quantité modifiée)');
-                            if (!rs.ok && delta > 0) { existing.pending = true; }
-                        }
-                        existing.qty = qty; ch = true;
-                    }
-                    if (ch) { updated++; touched[c.id] = 1; }
-                    return;
-                }
-                if (c.portalResvKeys.indexOf(key) !== -1) return;   // déjà traitée (clôturée/annulée en boutique)
-                var prod = findProduct(it.id);
-                var decremented = false, pending = true;
-                if (prod && (parseFloat(prod.stock) || 0) >= qty) {
-                    var res = adjustStock(it.id, -qty, 'Réservation portail client');
-                    if (res.ok) { decremented = true; pending = false; }
-                }
-                var isKg = prod ? prod.unitType === 'kg' : false;
-                c.reservations.unshift({
-                    id: Date.now() + added,
-                    productId: prod ? prod.id : it.id,
-                    productName: (prod && prod.name) || it.name || 'Article',
-                    qty: qty,
-                    unitType: prod ? (prod.unitType || 'unit') : 'unit',
-                    price: prod ? (+(isKg ? prod.pricePerKg : prod.price) || 0) : (+it.price || 0),
-                    date: it.at ? new Date(it.at).toISOString() : new Date().toISOString(),
-                    decremented: decremented, pending: pending, ready: false,
-                    source: 'portail', portalKey: key, pickupDate: it.want || ''
-                });
-                c.portalResvKeys.push(key);
-                added++; touched[c.id] = 1;
-                if (names.indexOf(c.name) === -1) names.push(c.name);
-            });
-            // Articles retirés par le client dans son portail → réservation annulée ici
-            c.reservations = c.reservations.filter(function(r) {
-                if (r.source !== 'portail' || !r.portalKey || keys.indexOf(r.portalKey) !== -1) return true;
-                if (r.decremented !== false) adjustStock(r.productId, r.qty, 'Annulation réservation (portail client)');
-                cancelled++; touched[c.id] = 1;
-                return false;
-            });
-            if (c.portalResvKeys.length > 400) c.portalResvKeys = c.portalResvKeys.slice(-400);
-        });
-        if (added || cancelled || updated) ls(d);
-        Object.keys(touched).forEach(_fbResvPushClient);   // le portail du client voit le nouveau statut
-        if (added || cancelled || updated) refreshAll();
-        if (added) {
-            _fbResvNewCount += added; _fbResvBadge();
-            toast('📥 ' + added + ' nouvelle' + (added > 1 ? 's' : '') + ' réservation' + (added > 1 ? 's' : '') + ' du portail · ' + names.slice(0, 3).join(', ') + (names.length > 3 ? '…' : ''), 'success');
-        }
-        if (cancelled) toast('↩️ ' + cancelled + ' réservation' + (cancelled > 1 ? 's annulées' : ' annulée') + ' par le client (portail)', 'success');
-        if (unknown.length && (manual || added === 0)) toast('⚠️ Réservation(s) d\'un client introuvable sur ce poste : ' + unknown.slice(0, 3).join(', ') + ' — vérifiez sa fiche (n° de carte)', 'error');
-        if (manual && !added && !cancelled && !updated && !unknown.length) {
-            toast(nDocs
-                ? ('✅ Réservations portail à jour (' + nDocs + ' client' + (nDocs > 1 ? 's' : '') + ', ' + nItems + ' article' + (nItems > 1 ? 's' : '') + ' déjà importé' + (nItems > 1 ? 's' : '') + ')')
-                : 'ℹ️ Aucune réservation reçue du portail pour l\'instant — le client doit rouvrir son portail pour transmettre ses réservations', 'success');
-        }
-        console.info('[Réservations portail] documents lus :', nDocs, '· articles :', nItems, '· nouveaux :', added, '· clients introuvables :', unknown);
-        return added;
-    }).catch(function(err) {
-        var denied = err && (err.code === 'permission-denied' || /permission/i.test(err.message || ''));
-        console.error('[Réservations portail]', err);
-        if (manual || (denied && !_fbResvRulesWarned)) {
-            _fbResvRulesWarned = true;
-            toast(denied
-                ? '🔒 Lecture des réservations refusée : ajoutez la règle Firestore « reservations » (voir le guide)'
-                : '❌ Impossible de récupérer les réservations portail — vérifiez la connexion', 'error');
-        }
-        return 0;
-    }).finally(function() { _fbResvBusy = false; });
-};
-(function _fbResvAutoStart() {
-    var start = function() {
-        if (!_fbInit()) return;   // portail non configuré : rien à faire
-        setTimeout(function(){ window.fbImportPortalReservations(false); }, 2500);
-        setInterval(function(){ if (!document.hidden) window.fbImportPortalReservations(false); }, FB_RESV_POLL_MS);
-        document.addEventListener('visibilitychange', function(){ if (!document.hidden) window.fbImportPortalReservations(false); });
-    };
-    // toujours différé : _fbInit()/_fbApp sont initialisés plus bas dans ce même script
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else setTimeout(start, 0);
-})();
 
 var _fbApp = null, _fbStaffReady = null;
 function _fbInit() {
@@ -3173,6 +3085,7 @@ function _fbClientPayload(c) {
     var history = (c.history||[]).slice(0,30).map(function(h){
         return { date: h.date||null, type: h.type||'', amount: +(h.amount||0), points: h.points||0, label: (typeof histLabel==='function') ? histLabel(h.type) : (h.type||'Opération') };
     });
+    var _rv = _fbResvPayload(c);
     return {
         name: c.name||'',
         barcode: c.barcode||'',
@@ -3184,21 +3097,27 @@ function _fbClientPayload(c) {
         echeances: echeances.slice(0,10),
         history: history,
         catalogAccess: !!c.catalogAccess,
-        // Réservations (faites en boutique ou depuis le portail) + statut, affichées dans l'espace client
-        reservations: (c.reservations||[]).slice(0,50).map(function(r){
-            return {
-                productId: r.productId != null ? r.productId : null,
-                name: r.productName || '',
-                qty: +r.qty || 1,
-                date: r.date || null,
-                status: resvAvail(r) ? 'ready' : 'waiting',
-                portalKey: r.portalKey || null,
-                pickupDate: r.pickupDate || '',
-                source: r.source || 'boutique'
-            };
-        }),
+        reservations: _rv.list,
+        resvTotal: _rv.tot,
+        resvDispo: _rv.dispo,
         updatedAt: new Date().toISOString()
     };
+}
+// Réservations envoyées au portail, avec leur disponibilité calculée sur le stock actuel
+function _fbResvPayload(c) {
+    var pm = {};
+    try { (JSON.parse(localStorage.getItem('covo_products') || '[]') || []).forEach(function(p){ pm[String(p.id)] = p; }); } catch(e) {}
+    var all = (c.reservations || []).map(function(r){
+        var p = pm[String(r.productId)], s = p ? p.stock : null;
+        var setAside = (r.decremented !== false), inStock = (s != null && s >= (r.qty || 0));
+        // status : format lu par le Portail fidélité — 'ready' = mis de côté par le commerce,
+        // 'available' = en stock (à récupérer), 'waiting' = en attente de réapprovisionnement
+        return { id: r.id, productId: r.productId != null ? r.productId : null,
+                 name: r.productName || 'Article', qty: +(r.qty || 0), unitType: r.unitType || 'unit', price: +(r.price || 0),
+                 date: r.date || null, available: setAside || inStock,
+                 status: setAside ? 'ready' : (inStock ? 'available' : 'waiting') };
+    });
+    return { list: all.slice(0, 40), tot: all.length, dispo: all.filter(function(x){ return x.available; }).length };
 }
 function _fbWaCredentialsMsg(c, password) {
     return 'Bonjour '+(c.name||'')+' 🎁\n\nVotre espace client fidélité COVO est prêt !\n\n'
@@ -3231,6 +3150,7 @@ window._fbEnsureClientPortal = function(clientId) {
         return _fbStaffSignIn().then(function(){
             return app.firestore().collection('clients').doc(c.portalUid).set(_fbClientPayload(c), { merge: true });
         }).then(function(){
+            if (typeof _fbSyncStatePut === 'function') { var _fc = find(clientId); if (_fc) _fbSyncStatePut(clientId, { h: _fbPayloadHash(_fc), ok: true, at: new Date().toISOString() }); _fbSyncStatusRefresh(); }
             return { uid: c.portalUid, password: c.portalPassword || null, justCreated: false };
         });
     }
@@ -3275,6 +3195,90 @@ window._fbSyncClientPortal = function(clientId) {
         console.error('[Portail] Échec synchronisation en arrière-plan', err);
     });
 };
+
+/* ── SYNCHRONISATION AUTOMATIQUE fiche fidélité → Portail fidélité ─────────
+   Dès qu'une fiche change (points, crédit, échéances, réservations, disponibilité
+   des articles réservés…) — ici, dans COVO Pro ou dans Caisse Pro — chaque client
+   qui possède un accès portail est mis à jour sur Firebase, sans action manuelle.
+   Seules les fiches qui ont réellement changé sont envoyées (empreinte du contenu),
+   un échec est retenté automatiquement. Les identifiants « staff » restent
+   uniquement dans ce fichier (le portail client ne fait que lire). ── */
+var FB_SYNC_STATE_KEY = 'covo_portal_sync_state';
+var _fbAutoT = null, _fbAutoRunning = false, _fbAutoAgain = false;
+function _fbHash(s) {
+    var h1 = 0x811c9dc5, h2 = 0x01000193 ^ s.length;
+    for (var i = 0; i < s.length; i++) { var ch = s.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 16777619); h2 = Math.imul(h2 ^ ch, 2246822519); }
+    return (h1 >>> 0).toString(16) + (h2 >>> 0).toString(16);
+}
+function _fbSyncStateGet() { try { return JSON.parse(localStorage.getItem(FB_SYNC_STATE_KEY) || '{}') || {}; } catch(e) { return {}; } }
+function _fbSyncStatePut(id, v) { var s = _fbSyncStateGet(); s[id] = v; try { localStorage.setItem(FB_SYNC_STATE_KEY, JSON.stringify(s)); } catch(e) {} }
+function _fbPayloadHash(c) { var p = _fbClientPayload(c); delete p.updatedAt; return _fbHash(JSON.stringify(p)); }
+window._fbAutoSyncSchedule = function(delay) {
+    clearTimeout(_fbAutoT);
+    _fbAutoT = setTimeout(_fbAutoSyncRun, delay == null ? 2500 : delay);
+};
+function _fbAutoSyncRun() {
+    var app = _fbInit();
+    if (!app) return; // module Portail non configuré : aucune action
+    if (_fbAutoRunning) { _fbAutoAgain = true; return; }
+    var st = _fbSyncStateGet(), todo = [];
+    lg().customers.forEach(function(c) {
+        if (!c.portalUid || !c.barcode) return;
+        var h = _fbPayloadHash(c), cur = st[c.id];
+        if (!cur || !cur.ok || cur.h !== h) todo.push({ id: c.id, uid: c.portalUid, h: h });
+    });
+    if (!todo.length) { _fbSyncStatusRefresh(); return; }
+    _fbAutoRunning = true;
+    _fbSyncStatusRefresh(true);
+    _fbStaffSignIn().then(function() {
+        var chain = Promise.resolve();
+        todo.forEach(function(tk) {
+            chain = chain.then(function() {
+                var c = find(tk.id); if (!c || !c.portalUid) return;
+                return app.firestore().collection('clients').doc(c.portalUid).set(_fbClientPayload(c), { merge: true })
+                    .then(function() { _fbSyncStatePut(tk.id, { h: tk.h, ok: true, at: new Date().toISOString() }); })
+                    .catch(function(err) {
+                        _fbSyncStatePut(tk.id, { h: '', ok: false, at: new Date().toISOString(), err: (err && (err.code || err.message)) || 'erreur' });
+                        console.warn('[Portail] synchro auto échouée pour ' + tk.id, err);
+                    });
+            });
+        });
+        return chain;
+    }).catch(function(err) {
+        todo.forEach(function(tk) { _fbSyncStatePut(tk.id, { h: '', ok: false, at: new Date().toISOString(), err: (err && (err.code || err.message)) || 'connexion' }); });
+        console.warn('[Portail] synchro auto : connexion staff impossible', err);
+    }).then(function() {
+        _fbAutoRunning = false;
+        _fbSyncStatusRefresh();
+        if (_fbAutoAgain) { _fbAutoAgain = false; window._fbAutoSyncSchedule(1500); }
+    });
+}
+// Texte d'état affiché dans la fiche client
+window._fbSyncStatusHtml = function(c, busy) {
+    if (!c) return '';
+    if (!_fbInit()) return '';
+    if (!c.portalUid) return '🔗 Portail : pas encore d’accès — utilisez « Envoyer le code »';
+    var s = _fbSyncStateGet()[c.id];
+    if (busy) return '<span style="color:#2563eb;font-weight:700;">🔄 Portail : synchronisation…</span>';
+    if (!s) return '<span style="color:#2563eb;font-weight:700;">⏳ Portail : synchronisation en attente</span>';
+    var hhmm = s.at ? new Date(s.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
+    if (!s.ok) return '<span style="color:#dc2626;font-weight:700;" title="' + _pfSafeEsc(s.err || '') + '">⚠️ Portail : échec de synchro (' + hhmm + ') — nouvel essai automatique</span>';
+    if (s.h !== _fbPayloadHash(c)) return '<span style="color:#2563eb;font-weight:700;">⏳ Portail : mise à jour en attente</span>';
+    return '<span style="color:#059669;font-weight:700;">✅ Portail synchronisé · ' + hhmm + '</span>';
+};
+function _fbSyncStatusRefresh(busy) {
+    var el = document.getElementById('lty-portal-sync-status');
+    if (!el) return;
+    var c = find(el.getAttribute('data-id'));
+    el.innerHTML = window._fbSyncStatusHtml(c, busy);
+}
+// Modifications venant de COVO Pro / Caisse Pro (même navigateur) : fiche ou stock → resynchroniser
+window.addEventListener('storage', function(e) {
+    if (e.key === 'covo_loyalty' || e.key === 'covo_products') window._fbAutoSyncSchedule();
+});
+// Au démarrage (rattrape ce qui a changé pendant que Fidélité Pro était fermée) puis toutes les 2 min
+window._fbAutoSyncSchedule(4000);
+setInterval(function() { _fbAutoSyncRun(); }, 120000);
 
 /* ── Modale « Accès portail client » ─────────────────────────────────────
    AMÉLIORATION (demande : pouvoir visualiser le code/mot de passe du client,
