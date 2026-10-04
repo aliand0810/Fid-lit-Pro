@@ -3021,12 +3021,14 @@ window.fbImportPortalReservations = function(manual) {
     return _fbStaffSignIn().then(function() {
         return app.firestore().collection('reservations').get();
     }).then(function(snap) {
-        var d = lg(), added = 0, cancelled = 0, updated = 0, touched = {}, names = [];
+        var d = lg(), added = 0, cancelled = 0, updated = 0, touched = {}, names = [], nDocs = 0, nItems = 0, unknown = [];
         snap.forEach(function(doc) {
             var data = doc.data() || {}, uid = doc.id;
+            nDocs++; nItems += (Array.isArray(data.items) ? data.items.length : 0);
             var idx = d.customers.findIndex(function(x){ return x.portalUid === uid; });
             if (idx === -1 && data.barcode) idx = d.customers.findIndex(function(x){ return x.barcode && String(x.barcode).toUpperCase() === String(data.barcode).toUpperCase(); });
-            if (idx === -1) return;   // client inconnu sur ce poste
+            if (idx === -1) { if ((data.items || []).length) unknown.push((data.clientName || '?') + (data.barcode ? ' (' + data.barcode + ')' : '')); return; }   // client inconnu sur ce poste
+            if (d.customers[idx].portalUid !== uid && !d.customers[idx].portalUid) d.customers[idx].portalUid = uid;   // lien retrouvé par n° de carte
             var c = d.customers[idx];
             if (!c.reservations) c.reservations = [];
             if (!Array.isArray(c.portalResvKeys)) c.portalResvKeys = [];
@@ -3090,7 +3092,13 @@ window.fbImportPortalReservations = function(manual) {
             toast('📥 ' + added + ' nouvelle' + (added > 1 ? 's' : '') + ' réservation' + (added > 1 ? 's' : '') + ' du portail · ' + names.slice(0, 3).join(', ') + (names.length > 3 ? '…' : ''), 'success');
         }
         if (cancelled) toast('↩️ ' + cancelled + ' réservation' + (cancelled > 1 ? 's annulées' : ' annulée') + ' par le client (portail)', 'success');
-        if (manual && !added && !cancelled && !updated) toast('✅ Réservations portail à jour — aucune nouvelle réservation', 'success');
+        if (unknown.length && (manual || added === 0)) toast('⚠️ Réservation(s) d\'un client introuvable sur ce poste : ' + unknown.slice(0, 3).join(', ') + ' — vérifiez sa fiche (n° de carte)', 'error');
+        if (manual && !added && !cancelled && !updated && !unknown.length) {
+            toast(nDocs
+                ? ('✅ Réservations portail à jour (' + nDocs + ' client' + (nDocs > 1 ? 's' : '') + ', ' + nItems + ' article' + (nItems > 1 ? 's' : '') + ' déjà importé' + (nItems > 1 ? 's' : '') + ')')
+                : 'ℹ️ Aucune réservation reçue du portail pour l\'instant — le client doit rouvrir son portail pour transmettre ses réservations', 'success');
+        }
+        console.info('[Réservations portail] documents lus :', nDocs, '· articles :', nItems, '· nouveaux :', added, '· clients introuvables :', unknown);
         return added;
     }).catch(function(err) {
         var denied = err && (err.code === 'permission-denied' || /permission/i.test(err.message || ''));
