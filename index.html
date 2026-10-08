@@ -1870,6 +1870,7 @@ window._ltyAdjustDebtLegacy = function(id){
 /* ── Ajustement du solde du compte crédit, avec aperçu (positif = avoir, négatif = dette) ── */
 // Jauge : zéro au centre, dette à gauche (rouge), avoir à droite (vert), plafond de dette en pointillés.
 function _soldeGauge(cur, nxt, lim, compact){
+    _adjEnsureStyle();   // styles présents dès le premier affichage de l'onglet (pas seulement à l'ouverture de la fenêtre)
     var vals = [Math.abs(cur||0), Math.abs(nxt==null?0:nxt), lim>0?lim:0, 10];
     var R = Math.max.apply(null, vals) * 1.15;
     function x(v){ return Math.max(0, Math.min(100, 50 + (v/R)*50)); }
@@ -1879,14 +1880,14 @@ function _soldeGauge(cur, nxt, lim, compact){
     }
     var show = (nxt==null) ? cur : nxt;
     var h = '<div class="lty-adj-gauge'+(compact?' compact':'')+'">'
-        + '<div class="g-track">'
+        + '<div class="g-track" style="position:relative;height:'+(compact?8:12)+'px;">'
         + fill(show, show<0?'#dc2626':'#059669', nxt==null?.85:.9)
         + (lim>0 && x(-lim)>0 ? '<span class="g-lim" style="left:'+x(-lim)+'%;" title="Plafond de dette : '+lim.toFixed(2)+'€"></span>' : '')
         + '<span class="g-zero"></span>'
         + (nxt!=null ? '<span class="g-dot old" style="left:'+x(cur)+'%;" title="Avant : '+fmtSolde(cur)+'"></span>' : '')
         + '<span class="g-dot" style="left:'+x(show)+'%;background:'+(show<-0.004?'#dc2626':(show>0.004?'#059669':'#64748b'))+';" title="'+fmtSolde(show)+'"></span>'
         + '</div>'
-        + '<div class="g-legend"><span style="color:#dc2626;">◀ Dette (le client doit)</span><span>0€</span><span style="color:#059669;">Avoir (en sa faveur) ▶</span></div>'
+        + '<div class="g-legend" style="display:flex;justify-content:space-between;font-size:.6rem;font-weight:700;"><span style="color:#dc2626;">◀ Dette (le client doit)</span><span>0€</span><span style="color:#059669;">Avoir (en sa faveur) ▶</span></div>'
         + '</div>';
     return h;
 }
@@ -1897,9 +1898,10 @@ var _ADJ_MOTIFS = {
     minus: ['Achat non enregistré','Frais / service','Correction d’erreur','Report d’un ancien solde','Autre'],
     set:   ['Mise à jour du solde','Correction d’erreur','Report d’un ancien solde','Autre']
 };
-function _adjEnsureModal(){
-    if (document.getElementById('credit-adjust-modal')) return;
+function _adjEnsureStyle(){
+    if (document.getElementById('lty-adj-style')) return;
     var st = document.createElement('style');
+    st.id = 'lty-adj-style';
     st.textContent = [
         '.lty-adj-seg{display:flex;gap:4px;background:var(--bg-body);border:1px solid var(--border-color);border-radius:12px;padding:4px;margin-bottom:14px;}',
         '.lty-adj-seg button{flex:1;border:none;background:transparent;color:var(--text-main);font-weight:800;font-size:.74rem;padding:8px 6px;border-radius:9px;cursor:pointer;line-height:1.25;}',
@@ -1934,6 +1936,10 @@ function _adjEnsureModal(){
         '@media (prefers-reduced-motion: reduce){.lty-adj-gauge .g-dot{transition:none;}}'
     ].join('\n');
     document.head.appendChild(st);
+}
+function _adjEnsureModal(){
+    _adjEnsureStyle();
+    if (document.getElementById('credit-adjust-modal')) return;
     var m = document.createElement('div');
     m.className = 'lty-modal'; m.id = 'credit-adjust-modal';
     m.setAttribute('role','dialog'); m.setAttribute('aria-modal','true'); m.setAttribute('aria-labelledby','cadj-title');
