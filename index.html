@@ -1892,9 +1892,11 @@ function _soldeGauge(cur, nxt, lim, compact){
     return h;
 }
 
-var _adj = { id:null, mode:'plus', sign:-1 };
+var _adj = { id:null, mode:'plus', sign:-1, pay:'none', payAuto:true };
+var _ADJ_PAY_LBL = { plus:'💰 Le client a réglé par', minus:'💸 Rendu / remboursé au client par', set:'💰 Paiement associé' };
+function _adjPayIsMotif(m){ return /^(Règlement|Acompte)/.test(m||''); }
 var _ADJ_MOTIFS = {
-    plus:  ['Geste commercial','Acompte versé par le client','Avoir (retour / erreur de caisse)','Correction d’erreur','Autre'],
+    plus:  ['Règlement du client','Acompte versé par le client','Geste commercial','Avoir (retour / erreur de caisse)','Correction d’erreur','Autre'],
     minus: ['Achat non enregistré','Frais / service','Correction d’erreur','Report d’un ancien solde','Autre'],
     set:   ['Mise à jour du solde','Correction d’erreur','Report d’un ancien solde','Autre']
 };
@@ -1910,6 +1912,12 @@ function _adjEnsureStyle(){
         '.lty-adj-quick{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;}',
         '.lty-adj-quick button{border:1px solid var(--border-color);background:var(--bg-body);color:var(--text-main);border-radius:14px;padding:3px 10px;font-size:.72rem;font-weight:700;cursor:pointer;}',
         '.lty-adj-sign{display:flex;gap:6px;margin-bottom:8px;}',
+        '.lty-adj-pay{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;}',
+        '.lty-adj-pay button{border:1.5px solid var(--border-color);background:var(--bg-body);color:var(--text-main);border-radius:9px;padding:8px 4px;font-weight:800;font-size:.74rem;cursor:pointer;white-space:nowrap;}',
+        '.lty-adj-pay button.on{border-color:#4f46e5;background:rgba(79,70,229,.12);color:#4338ca;}',
+        '.lty-adj-pay button[data-p="none"].on{border-color:var(--text-muted);background:rgba(0,0,0,.05);color:var(--text-main);}',
+        '@media (max-width:420px){.lty-adj-pay{grid-template-columns:1fr 1fr;}}',
+        '.lty-adj-paid{text-align:center;font-size:.76rem;font-weight:800;margin-top:6px;color:#4338ca;}',
         '.lty-adj-sign button{flex:1;border:1.5px solid var(--border-color);background:transparent;color:var(--text-main);border-radius:9px;padding:7px;font-weight:800;font-size:.76rem;cursor:pointer;}',
         '.lty-adj-sign button.on.neg{border-color:#dc2626;background:rgba(220,38,38,.1);color:#dc2626;}',
         '.lty-adj-sign button.on.pos{border-color:#059669;background:rgba(5,150,105,.1);color:#047857;}',
@@ -1960,9 +1968,16 @@ function _adjEnsureModal(){
         +   '<div style="margin-bottom:12px;"><label class="lty-lbl" id="cadj-amt-lbl" style="color:#4338ca;">Montant (€)</label>'
         +     '<input class="lty-fld" id="cadj-amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0,00" style="font-size:1.1rem;font-weight:800;">'
         +     '<div class="lty-adj-quick" id="cadj-quick"></div></div>'
-        +   '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">'
-        +     '<div><label class="lty-lbl" style="color:#4338ca;">Motif</label><select class="lty-fld" id="cadj-motif"></select></div>'
-        +     '<div id="cadj-meth-wrap" style="display:none;"><label class="lty-lbl" style="color:#4338ca;">Encaissé en</label><select class="lty-fld" id="cadj-method"><option value="cash">💶 Espèces</option><option value="cb">💳 Carte bancaire</option><option value="virement">🏦 Virement</option></select></div>'
+        +   '<div style="margin-bottom:12px;"><label class="lty-lbl" style="color:#4338ca;">Motif</label><select class="lty-fld" id="cadj-motif"></select></div>'
+        +   '<div style="margin-bottom:12px;"><label class="lty-lbl" id="cadj-pay-lbl" style="color:#4338ca;">💰 Le client a réglé par</label>'
+        +     '<div class="lty-adj-pay" id="cadj-pay" role="radiogroup">'
+        +       '<button type="button" data-p="none" role="radio">— Sans paiement</button>'
+        +       '<button type="button" data-p="cash" role="radio">💶 Espèces</button>'
+        +       '<button type="button" data-p="cb" role="radio">💳 CB</button>'
+        +       '<button type="button" data-p="other" role="radio">✏️ Autre</button>'
+        +     '</div>'
+        +     '<div id="cadj-pay-other-wrap" style="display:none;margin-top:6px;"><input class="lty-fld" id="cadj-pay-other" list="cadj-pay-list" maxlength="40" placeholder="Préciser : virement, chèque, ticket resto…">'
+        +       '<datalist id="cadj-pay-list"><option value="Virement"><option value="Chèque"><option value="Ticket restaurant"><option value="Mobile money"><option value="Bon d’achat"></datalist></div>'
         +   '</div>'
         +   '<div style="margin-bottom:14px;"><label class="lty-lbl" style="color:#4338ca;">Précision (facultatif)</label><input class="lty-fld" id="cadj-note" maxlength="120" placeholder="Ex. ticket n° 1245, accord du responsable…"></div>'
         +   '<div class="lty-lbl" style="color:#4338ca;">👁️ Aperçu</div>'
@@ -1978,12 +1993,20 @@ function _adjEnsureModal(){
         if (b){ _adjSetMode(b.getAttribute('data-m')); return; }
         var s = e.target.closest('[data-s]');
         if (s){ _adj.sign = +s.getAttribute('data-s'); _adjRender(); return; }
+        var pb = e.target.closest('[data-p]');
+        if (pb){ _adj.pay = pb.getAttribute('data-p'); _adj.payAuto = false; _adjRender();
+            if (_adj.pay==='other') setTimeout(function(){ var o=document.getElementById('cadj-pay-other'); if(o) o.focus(); }, 30); return; }
         var q = e.target.closest('[data-q]');
         if (q){ var inp=document.getElementById('cadj-amount'); inp.value = q.getAttribute('data-q'); if (q.hasAttribute('data-zero')) _adj.sign=-1; _adjRender(); inp.focus(); return; }
         if (e.target === m) ltyCloseAdjust();
     });
     document.getElementById('cadj-amount').addEventListener('input', _adjRender);
-    document.getElementById('cadj-motif').addEventListener('change', _adjRender);
+    document.getElementById('cadj-motif').addEventListener('change', function(){
+        // Motif « Règlement / Acompte » → espèces proposé ; autre motif → sans paiement (tant que l'utilisateur n'a pas choisi lui-même)
+        if (_adj.payAuto) _adj.pay = (_adj.mode==='plus' && _adjPayIsMotif(this.value)) ? 'cash' : 'none';
+        _adjRender();
+    });
+    document.getElementById('cadj-pay-other').addEventListener('input', _adjRender);
     document.getElementById('cadj-amount').addEventListener('keydown', function(e){ if (e.key==='Enter'){ e.preventDefault(); ltyDoAdjust(); } });
     document.addEventListener('keydown', function(e){ if (e.key==='Escape' && m.classList.contains('open')) ltyCloseAdjust(); });
 }
@@ -1992,6 +2015,7 @@ function _adjSetMode(mode){
     var c = find(_adj.id); if(!c) return;
     var sel = document.getElementById('cadj-motif');
     sel.innerHTML = _ADJ_MOTIFS[mode].map(function(x){ return '<option>'+esc(x)+'</option>'; }).join('');
+    _adj.pay = (mode==='plus' && _adjPayIsMotif(sel.value)) ? 'cash' : 'none'; _adj.payAuto = true;
     var inp = document.getElementById('cadj-amount');
     if (mode==='set'){ var s=soldeOf(c); _adj.sign = s>0.004?1:-1; inp.value = Math.abs(s).toFixed(2); }
     else inp.value = '';
@@ -2020,9 +2044,9 @@ function _adjRender(){
           + (_adj.mode==='minus' && cur>0.004 ? '<button type="button" data-q="'+cur.toFixed(2)+'">Utiliser tout l’avoir ('+cur.toFixed(2)+'€)</button>' : '');
     document.getElementById('cadj-quick').innerHTML = quick;
     var motif = document.getElementById('cadj-motif').value;
-    var methOn = (_adj.mode==='plus' && /^Acompte/.test(motif));
-    document.getElementById('cadj-meth-wrap').style.display = methOn ? '' : 'none';
-    document.getElementById('cadj-motif').parentNode.style.gridColumn = methOn ? '' : '1 / -1';
+    document.getElementById('cadj-pay-lbl').textContent = _ADJ_PAY_LBL[_adj.mode];
+    document.querySelectorAll('#cadj-pay [data-p]').forEach(function(b){ var on=b.getAttribute('data-p')===_adj.pay; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); });
+    document.getElementById('cadj-pay-other-wrap').style.display = _adj.pay==='other' ? '' : 'none';
     var curEl = document.getElementById('cadj-cur'); curEl.textContent = fmtSolde(cur); curEl.style.color = soldeCol(cur);
 
     var prev = document.getElementById('cadj-prev'), ok = document.getElementById('cadj-ok');
@@ -2032,7 +2056,8 @@ function _adjRender(){
         + '<div class="b after"><div class="k">Après</div><div class="v" style="color:'+soldeCol(show)+';">'+fmtSolde(show)+'</div></div></div>'
         + '<div class="lty-adj-delta" style="color:'+(diff>0?'#059669':(diff<0?'#dc2626':'var(--text-muted)'))+';">'+(Math.abs(diff)<0.005?'Aucun changement':('Variation : '+fmtSolde(diff)))+'</div>'
         + _soldeGauge(cur, show, lim, false)
-        + '<div class="lty-adj-sum" style="color:'+soldeCol(show)+';">'+esc(soldeTxt(show))+'</div>';
+        + '<div class="lty-adj-sum" style="color:'+soldeCol(show)+';">'+esc(soldeTxt(show))+'</div>'
+        + (_adj.pay!=='none' && Math.abs(diff)>=0.005 ? '<div class="lty-adj-paid">'+(_adj.mode==='minus'?'💸 Rendu au client':'💰 Payé par le client')+' : '+Math.abs(diff).toFixed(2)+'€ en '+esc(_adjPayText())+'</div>' : '');
     if (nv!=null && Math.abs(diff)>=0.005){
         if (lim>0 && -show > lim+0.001) h += '<div class="lty-adj-warn red">⚠️ La dette ('+Math.abs(show).toFixed(2)+'€) dépasse le plafond autorisé de '+lim.toFixed(2)+'€.</div>';
         if (cur<-0.004 && show>0.004) h += '<div class="lty-adj-warn blue">ℹ️ La dette est entièrement soldée et le client garde un avoir de '+show.toFixed(2)+'€ (utilisable sur ses prochains achats à crédit).</div>';
@@ -2042,13 +2067,19 @@ function _adjRender(){
     var valid = nv!=null && Math.abs(diff)>=0.005;
     ok.disabled = !valid; ok.style.opacity = valid ? '' : '.45'; ok.style.cursor = valid ? '' : 'not-allowed';
 }
+function _adjPayText(){
+    if (_adj.pay==='cash') return 'espèces';
+    if (_adj.pay==='cb') return 'CB';
+    if (_adj.pay==='other'){ var o=String((document.getElementById('cadj-pay-other')||{}).value||'').trim(); return o || 'autre moyen'; }
+    return '';
+}
 window.ltyOpenAdjust = function(id, mode){
     var c = find(id); if(!c){ toast('⚠️ Client introuvable'); return; }
     _adjEnsureModal();
     _adj = { id:id, mode:'plus', sign:-1 };
     document.getElementById('cadj-name').textContent = c.name || '—';
     document.getElementById('cadj-note').value = '';
-    document.getElementById('cadj-method').value = 'cash';
+    document.getElementById('cadj-pay-other').value = '';
     document.getElementById('credit-adjust-modal').classList.add('open');
     _adjSetMode(mode || 'plus');
 };
@@ -2066,16 +2097,18 @@ window.ltyDoAdjust = function(){
     var before = +(cu.credit||0), after = +(-nv).toFixed(2), delta = +(after-before).toFixed(2);
     var motif = document.getElementById('cadj-motif').value || 'Ajustement';
     var note = String(document.getElementById('cadj-note').value||'').trim();
-    var withMethod = _adj.mode==='plus' && /^Acompte/.test(motif);
+    if (_adj.pay==='other' && !String(document.getElementById('cadj-pay-other').value||'').trim()){ toast('✏️ Précisez le moyen de paiement (ou choisissez Espèces / CB)'); document.getElementById('cadj-pay-other').focus(); return; }
+    var method = _adj.pay==='none' ? null : _adj.pay;
+    var methodDetail = _adj.pay==='other' ? String(document.getElementById('cadj-pay-other').value).trim().slice(0,40) : null;
     cu.credit = after;
     if (!cu.history) cu.history=[];
-    cu.history.unshift({ date:new Date().toISOString(), saleId:null, amount:Math.abs(delta), delta:delta, method: withMethod ? document.getElementById('cadj-method').value : null,
+    cu.history.unshift({ date:new Date().toISOString(), saleId:null, amount:Math.abs(delta), delta:delta, method: method, methodDetail: methodDetail,
         points:0, type:'credit_adjust', mode:_adj.mode, cashier:currentUserName(), motif:motif,
-        note: motif + (note ? ' — '+note : ''), soldeBefore: +(-before).toFixed(2), soldeAfter: nv });
+        note: motif + (note ? ' — '+note : '') + (method ? (_adj.mode==='minus'?' · rendu en ':' · payé en ')+_adjPayText() : ''), soldeBefore: +(-before).toFixed(2), soldeAfter: nv });
     cu.history = cu.history.slice(0,300);
     ls(d);
     ltyCloseAdjust();
-    toast('⚖️ Compte de '+cu.name+' : '+fmtSolde(-before)+' → '+fmtSolde(nv)+(nv>0.004?' (avoir)':(nv<-0.004?' (dû)':' (soldé)')),'success');
+    toast('⚖️ Compte de '+cu.name+' : '+fmtSolde(-before)+' → '+fmtSolde(nv)+(nv>0.004?' (avoir)':(nv<-0.004?' (dû)':' (soldé)'))+(method?(' · '+_adjPayText()):''),'success');
     refreshAll();
 };
 
