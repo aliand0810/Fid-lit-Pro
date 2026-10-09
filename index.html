@@ -399,7 +399,12 @@
     <div style="font-size:3rem;">🔒</div>
     <div id="cp-access-gate-title" style="font-size:1.2rem;font-weight:900;"></div>
     <div id="cp-access-gate-msg" style="font-size:0.9rem;color:#ccc;max-width:420px;line-height:1.5;"></div>
-    <a id="cp-access-gate-link" href="https://aliand0810.github.io/Covo-pro/" target="covopro" style="display:none;text-decoration:none;background:linear-gradient(135deg,#8b5cf6,#6d28d9);color:#fff;padding:10px 22px;border-radius:9px;font-weight:800;font-size:0.9rem;">🔑 Se connecter dans COVO Pro</a>
+    <div id="cp-access-gate-who" style="display:none;font-size:0.78rem;color:#a5b4fc;background:rgba(139,92,246,0.14);border:1px solid rgba(139,92,246,0.35);border-radius:10px;padding:7px 12px;max-width:420px;"></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;">
+        <a id="cp-access-gate-link" href="https://aliand0810.github.io/Covo-pro/" target="covopro" style="display:none;text-decoration:none;background:linear-gradient(135deg,#8b5cf6,#6d28d9);color:#fff;padding:10px 22px;border-radius:9px;font-weight:800;font-size:0.9rem;">🔑 Se connecter dans COVO Pro</a>
+        <button type="button" id="cp-access-gate-retry" onclick="window._cpGateRetry()" style="background:transparent;color:#fff;border:1.5px solid rgba(255,255,255,0.45);padding:10px 18px;border-radius:9px;font-weight:800;font-size:0.9rem;cursor:pointer;">🔄 Réessayer</button>
+    </div>
+    <div style="font-size:0.72rem;color:#888;max-width:420px;line-height:1.5;">Déjà connecté dans COVO Pro ? Revenez sur l’onglet COVO Pro une seconde, puis cliquez sur « Réessayer ».</div>
 </div>
 
 <div id="cp-topbar">
@@ -727,7 +732,17 @@ function showScanToast(msg, type) {
     setTimeout(function(){ el.classList.remove('show'); setTimeout(function(){ el.remove(); }, 300); }, 3200);
 }
 function _covoCurrentUser() {
-    try { return JSON.parse(localStorage.getItem('covo_current_user') || 'null'); } catch(e) { return null; }
+    try { var u = JSON.parse(localStorage.getItem('covo_current_user') || 'null'); if (u) return u; } catch(e) {}
+    // Repli : la session COVO Pro (valable 24 h) est encore active alors que la clé partagée
+    // « covo_current_user » a été effacée (ex. déconnexion faite dans un autre onglet COVO Pro).
+    try {
+        var exp = parseInt(localStorage.getItem('covo_session_expiry') || '0', 10);
+        if (exp && Date.now() < exp) {
+            var s = JSON.parse(localStorage.getItem('covo_session_token') || 'null');
+            if (s && s.id) return s;
+        }
+    } catch(e) {}
+    return null;
 }
 var currentUser = _covoCurrentUser();
 function cpIsAdmin() {
@@ -745,6 +760,14 @@ function cpShowAccessGate(title, msg, showLink){
     var t = document.getElementById('cp-access-gate-title'); if (t) t.textContent = title;
     var m = document.getElementById('cp-access-gate-msg'); if (m) m.textContent = msg;
     var link = document.getElementById('cp-access-gate-link'); if (link) link.style.display = showLink ? 'inline-block' : 'none';
+    var who = document.getElementById('cp-access-gate-who');
+    if (who) {
+        if (currentUser) {
+            var r = currentUser.isMaster ? 'Admin-Développeur' : (currentUser.role === 'admin' ? 'admin' : (currentUser.role || 'rôle inconnu'));
+            who.textContent = 'Compte vu par Fidélité Pro : ' + (currentUser.username || currentUser.name || currentUser.id) + ' (' + r + ')';
+            who.style.display = '';
+        } else { who.textContent = ''; who.style.display = 'none'; }
+    }
     gate.style.display = 'flex';
     document.body.style.overflow = 'hidden';
 }
@@ -4016,8 +4039,24 @@ window.ltyResendPortalAccess = function(id) {
 };
 
 // ── Initialisation ────────────────────────────────────────────────────────
+window._cpGateRetry = function(){
+    cpRefreshUserBadge();
+    if (cpIsAdmin() && typeof window._ltyRefresh === 'function') { try { window._ltyRefresh(); } catch(e) {} }
+    if (!cpIsAdmin()) showScanToast('Toujours aucune session admin détectée — reconnectez-vous dans COVO Pro', 'info');
+};
 (function cpInit(){
     cpRefreshUserBadge();
+    // Retour sur l'onglet : on revérifie la session (connexion faite entre-temps dans COVO Pro)
+    function _cpRecheck(){
+        var g = document.getElementById('cp-access-gate'), wasLocked = !!(g && g.style.display === 'flex');
+        var before = JSON.stringify(currentUser || null);
+        if (JSON.stringify(_covoCurrentUser() || null) === before) return;   // rien n'a changé
+        cpRefreshUserBadge();
+        if (wasLocked && cpIsAdmin() && typeof window._ltyRefresh === 'function') { try { window._ltyRefresh(); } catch(e) {} }
+    }
+    window.addEventListener('storage', function(e){ if (e.key === 'covo_session_token' || e.key === 'covo_session_expiry' || e.key === null) _cpRecheck(); });
+    window.addEventListener('focus', _cpRecheck);
+    document.addEventListener('visibilitychange', function(){ if (!document.hidden) _cpRecheck(); });
     window.addEventListener('storage', function(e){
         if (e.key === 'covo_current_user') cpRefreshUserBadge();
         if (e.key === 'covo_loyalty' || e.key === 'covo_products') { if (typeof window._ltyRefresh==='function') window._ltyRefresh(); }
