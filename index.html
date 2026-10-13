@@ -659,6 +659,16 @@
       <label class="lty-lbl" style="margin-top:14px;">📲 Numéro WhatsApp pour les commandes clients</label>
       <input class="lty-fld" id="lset-wa" type="tel" placeholder="Ex. 06 12 34 56 78">
       <div style="margin-top:6px;font-size:.74rem;color:var(--text-muted);line-height:1.5;">Les clients utiliseront ce numéro pour envoyer leur commande depuis le Portail fidélité (onglet Produits → panier). Pensez à cliquer sur « 🛒 Sync catalogue » après l'avoir modifié pour le transmettre au portail.</div>
+      <div style="height:18px;border-bottom:1px solid var(--border-color);margin-bottom:14px;"></div>
+      <label class="lty-lbl">🔗 Lien du Portail fidélité (envoyé aux clients)</label>
+      <input class="lty-fld" id="lset-portal" type="url" placeholder="http://fidelite.covo-trv.fr/" oninput="ltyPortalUrlPreview()">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;">
+        <button type="button" class="lty-btn small secondary" onclick="ltyPortalUrlSet('default')" title="http://fidelite.covo-trv.fr/">🌐 Lien par défaut</button>
+        <button type="button" class="lty-btn small secondary" onclick="ltyPortalUrlSet('github')" title="https://aliand0810.github.io/Portail-fidelite/">↩️ Ancien lien GitHub</button>
+        <button type="button" class="lty-btn small secondary" onclick="ltyPortalUrlSet('clear')" style="color:#dc2626;">🗑️ Supprimer</button>
+        <button type="button" class="lty-btn small secondary" onclick="ltyPortalUrlTest()">🔎 Tester</button>
+      </div>
+      <div id="lset-portal-info" style="margin-top:7px;font-size:.74rem;color:var(--text-muted);line-height:1.5;"></div>
     </div>
     <div class="lty-box-foot">
       <button class="lty-btn" style="flex:2;" onclick="ltySaveSettings()">💾 Enregistrer</button>
@@ -3199,8 +3209,43 @@ window.ltyOpenSettings = function(){
     document.getElementById('lset-ppe').value = ppeV;
     document.getElementById('lset-val').value = +perPoint.toFixed(4);
     document.getElementById('lset-wa').value = s.whatsappOrderNumber || '';
+    document.getElementById('lset-portal').value = s.portalUrl || FB_PORTAL_URL_DEFAULT;
+    ltyPortalUrlPreview();
     ltyPreviewSettings();
     document.getElementById('lset-modal').classList.add('open');
+};
+/* ── Lien du Portail fidélité (réglage) ── */
+function _ltyNormPortalUrl(v) {
+    v = (v || '').trim();
+    if (!v) return '';
+    if (!/^https?:\/\//i.test(v)) {
+        if (/^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(v)) v = 'http://' + v;   // « fidelite.covo-trv.fr » saisi sans http
+        else return null;
+    }
+    try { var u = new URL(v); if (!u.hostname || u.hostname.indexOf('.') === -1) return null; } catch (e) { return null; }
+    if (!/\/$/.test(v) && !/\.[a-z0-9]{2,5}$/i.test(v.split('?')[0])) v += '/';
+    return v;
+}
+window.ltyPortalUrlPreview = function(){
+    var inp = document.getElementById('lset-portal'), info = document.getElementById('lset-portal-info');
+    if (!inp || !info) return;
+    var v = _ltyNormPortalUrl(inp.value);
+    if (v === null) { info.innerHTML = '<span style="color:#dc2626;font-weight:800;">⚠️ Lien invalide — exemple : http://fidelite.covo-trv.fr/</span>'; return; }
+    var eff = v || FB_PORTAL_URL_DEFAULT;
+    info.innerHTML = 'Lien envoyé aux clients avec leur code d\'accès : <strong style="color:var(--text-main);">' + esc(eff) + '</strong>'
+        + (v ? '' : ' <em>(par défaut)</em>')
+        + (/^http:\/\//i.test(eff) ? '<br>💡 Activez « Enforce HTTPS » dans GitHub Pages : le lien en http:// redirigera vers la version sécurisée.' : '');
+};
+window.ltyPortalUrlSet = function(k){
+    var inp = document.getElementById('lset-portal'); if (!inp) return;
+    inp.value = k === 'github' ? FB_PORTAL_URL_GITHUB : (k === 'clear' ? '' : FB_PORTAL_URL_DEFAULT);
+    ltyPortalUrlPreview();
+    if (k === 'clear') toast('🗑️ Lien personnalisé supprimé — le lien par défaut sera utilisé après « Enregistrer »');
+};
+window.ltyPortalUrlTest = function(){
+    var v = _ltyNormPortalUrl((document.getElementById('lset-portal') || {}).value);
+    if (v === null) { toast('⚠️ Lien invalide'); return; }
+    window.open(v || FB_PORTAL_URL_DEFAULT, '_blank');
 };
 window.ltyCloseSettings = function(){ document.getElementById('lset-modal').classList.remove('open'); };
 window.ltyPreviewSettings = function(){
@@ -3221,6 +3266,9 @@ window.ltySaveSettings = function(){
     d.settings.rewardThreshold = 1;
     d.settings.rewardValue = val;
     d.settings.whatsappOrderNumber = waDigits;
+    var pu = _ltyNormPortalUrl(document.getElementById('lset-portal').value);
+    if (pu === null) { toast('⚠️ Lien du portail invalide — il doit commencer par http:// ou https://'); return; }
+    if (pu && pu !== FB_PORTAL_URL_DEFAULT) d.settings.portalUrl = pu; else delete d.settings.portalUrl;   // vide = lien par défaut
     ls(d);
     toast('✅ Réglages des points enregistrés','success');
     ltyCloseSettings();
@@ -3496,7 +3544,15 @@ var FB_CONFIG = {
 var FB_STAFF_EMAIL = "staff@covopro-portal.local";
 var FB_STAFF_PASSWORD = "R@hi081089";
 var FB_PORTAL_EMAIL_DOMAIN = "covopro-portal.local"; // domaine fictif : les clients n'ont pas besoin d'une vraie adresse e-mail
-var FB_PORTAL_URL = "https://aliand0810.github.io/Portail-fidelite/"; // dépôt réel du portail client sur GitHub Pages
+var FB_PORTAL_URL_DEFAULT = "http://fidelite.covo-trv.fr/";                 // lien par défaut du Portail fidélité (nom de domaine COVO)
+var FB_PORTAL_URL_GITHUB  = "https://aliand0810.github.io/Portail-fidelite/"; // ancienne adresse GitHub Pages (toujours valide)
+/* Lien envoyé aux clients : celui choisi dans ⚙️ Réglages, sinon le lien par défaut. */
+function _fbPortalUrl() {
+    var u = '';
+    try { u = ((lg().settings || {}).portalUrl || '').trim(); } catch (e) {}
+    return u || FB_PORTAL_URL_DEFAULT;
+}
+var FB_PORTAL_URL = FB_PORTAL_URL_DEFAULT;   // compatibilité : préférer _fbPortalUrl()
 
 /* ════════════════════════════════════════════════════════════
    CATALOGUE PRODUITS CÔTÉ PORTAIL — permet aux clients de voir, depuis
@@ -3833,7 +3889,7 @@ function _fbClientPayload(c) {
 }
 function _fbWaCredentialsMsg(c, password) {
     return 'Bonjour '+(c.name||'')+' 🎁\n\nVotre espace client fidélité COVO est prêt !\n\n'
-        + '🔗 '+FB_PORTAL_URL+'\n'
+        + '🔗 '+_fbPortalUrl()+'\n'
         + '🎫 Code client : '+c.barcode+'\n'
         + '🔑 Mot de passe : '+password+'\n\n'
         + 'Vous pourrez y suivre vos points, votre solde et vos avantages à tout moment.';
@@ -3977,7 +4033,7 @@ function _fbPortalSuccessHtml(clientId, password) {
         + '<div style="font-size:.8rem;color:var(--text-muted);">Accès de <b>'+_pfSafeEsc(c.name)+'</b> :</div>'
         + _fbPortalFieldHtml('Code client', c.barcode||'—', 'rgba(37,99,235,.07)', 'rgba(37,99,235,.2)')
         + passwordBlock
-        + _fbPortalFieldHtml('Lien du portail', FB_PORTAL_URL, 'rgba(124,58,237,.07)', 'rgba(124,58,237,.2)')
+        + _fbPortalFieldHtml('Lien du portail', _fbPortalUrl(), 'rgba(124,58,237,.07)', 'rgba(124,58,237,.2)')
         + waBlock
         + '</div>';
 }
