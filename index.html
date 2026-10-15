@@ -667,6 +667,7 @@
         <button type="button" class="lty-btn small secondary" onclick="ltyPortalUrlSet('github')" title="https://aliand0810.github.io/Portail-fidelite/">↩️ Ancien lien GitHub</button>
         <button type="button" class="lty-btn small secondary" onclick="ltyPortalUrlSet('clear')" style="color:#dc2626;">🗑️ Supprimer</button>
         <button type="button" class="lty-btn small secondary" onclick="ltyPortalUrlTest()">🔎 Tester</button>
+        <button type="button" class="lty-btn small secondary" id="lset-portal-check" onclick="ltyPortalCheckAll()" title="Repère les clients supprimés depuis la console Firebase">🔎 Vérifier les accès en ligne</button>
       </div>
       <div id="lset-portal-info" style="margin-top:7px;font-size:.74rem;color:var(--text-muted);line-height:1.5;"></div>
     </div>
@@ -1384,6 +1385,7 @@ function renderList(q){
         var resvBub = rDispo>0
             ? '<span class="lty-resv-bub" title="'+rDispo+' article(s) réservé(s) disponible(s) sur '+rTot+(hasPortal?' — dont réservations du portail':'')+'">'+rDispo+'/'+rTot+'</span>'
             : '';
+        var delChip = (c.portalState === 'deleted-account' || c.portalState === 'deleted-doc') ? '<span class="lty-badge-chip" style="background:rgba(220,38,38,.13);color:#dc2626;" title="Accès en ligne supprimé de Firebase — ouvrir la fiche pour le recréer">⚠️ Accès supprimé</span>' : '';
         var msgChip = c.msgUnread ? '<span class="lty-badge-chip" style="background:rgba(28,85,160,.14);color:#1c55a0;" title="Nouveau message du client">💬 '+c.msgUnread+'</span>' : '';
         var resvChip = (rTot && !rDispo) ? '<span class="lty-badge-chip" style="background:rgba(245,158,11,.15);color:#b45309;" title="Réservations en attente de stock">📦 0/'+rTot+'</span>' : '';
         var checkbox = _ltyMultiMode
@@ -1397,7 +1399,7 @@ function renderList(q){
             +'<div class="lty-row-meta">'
             +'<span class="lty-badge-chip" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);color:#fff;">⭐ '+(c.points||0)+'</span>'
             +creditChip
-            +resvChip+msgChip
+            +resvChip+msgChip+delChip
             +catChip
             +'</div></div>';
     }).join('');
@@ -1891,6 +1893,7 @@ function renderCockpit(c){
         +'</div>'
         +'<div style="font-size:.72rem;color:var(--text-muted);margin-top:3px;">'+(c.phone?'📞 '+esc(c.phone)+'  ':'')+(c.barcode?'🎫 '+esc(c.barcode):(c.email?'✉️ '+esc(c.email):''))+'</div>'
         +'<div style="display:inline-flex;align-items:center;gap:6px;margin-top:7px;background:'+h.bg+';color:'+h.c+';padding:4px 11px;border-radius:20px;font-weight:800;font-size:.74rem;">'+h.dot+' '+h.txt+'</div>'
+        +'<span id="lty-portal-chip"></span>'
         +'</div>'
         +'<div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;">'
         +'<button onclick="ltyOpenClientModal(\''+esc(c.id)+'\')" style="background:rgba(245,158,11,.12);color:#d97706;border:none;border-radius:8px;padding:6px 11px;font-size:.76rem;font-weight:800;cursor:pointer;white-space:nowrap;">✏️ Modifier</button>'
@@ -1978,6 +1981,7 @@ window.ltySelectClient = function(id, silent){
     document.getElementById('lty-detail-view').style.display = 'flex';
     if (!silent && isNewClient) STATE.detTab = 'stats';
     renderCockpit(c);
+    if (typeof _ltyPortalChip === 'function') setTimeout(function(){ _ltyPortalChip(id); }, 0);
     // Portail client (Firebase) — une fiche ouverte = un code client "saisi" : créer son
     // accès portail s'il n'existe pas encore, sinon simplement resynchroniser ses données.
     // Seulement sur une VRAIE consultation (pas les rafraîchissements silencieux internes,
@@ -3498,6 +3502,7 @@ window.findProduct = findProduct;
 window.adjustStock = adjustStock;
 window.resvAvail = resvAvail;
 window.refreshAll = refreshAll;
+window._ltyState = STATE;   // fiche client ouverte (état de l'accès en ligne)
 
 })();
 </script>
@@ -4013,6 +4018,15 @@ window._fbEnsureClientPortal = function(clientId) {
             return app.firestore().collection('clients').doc(c.portalUid).set(_fbClientPayload(c), { merge: true });
         }).then(function(){
             return { uid: c.portalUid, password: c.portalPassword || null, justCreated: false };
+        }, function(err){
+            // Fiche supprimée dans Firestore : le magasin ne peut pas la recréer lui-même → restauration avec le compte du client
+            if (err && /permission-denied|not-found/.test(err.code || '') && typeof _fbRestoreDoc === 'function') {
+                return _fbRestoreDoc(clientId).then(function(res){ if (typeof _fbSetPortalState === 'function') _fbSetPortalState(clientId, 'ok'); return res; }, function(){
+                    if (typeof _fbSetPortalState === 'function') _fbSetPortalState(clientId, 'deleted-doc');
+                    throw { code: 'firebase-error', err: err };
+                });
+            }
+            throw { code: 'firebase-error', err: err };
         });
     }
 
@@ -4054,8 +4068,169 @@ window._fbSyncClientPortal = function(clientId) {
     }).catch(function(err){
         if (err && err.code === 'not-configured') return; // module non configuré : silence total, comportement d'origine inchangé
         console.error('[Portail] Échec synchronisation en arrière-plan', err);
+    }).then(function(){ if (typeof window._fbCheckPortal === 'function') window._fbCheckPortal(clientId); });
+};
+/* ════════════════════════════════════════════════════════════
+   ÉTAT DE L'ACCÈS EN LIGNE DU CLIENT (Firebase)
+   Détecte un client supprimé depuis la console Firebase :
+   - compte supprimé (Authentication)  → « Recréer l'accès » (nouveau mot de passe)
+   - fiche supprimée (Firestore)        → « Restaurer la fiche » (même mot de passe)
+   Vérifié à l'ouverture d'une fiche (au plus toutes les 10 min) et à la demande.
+   ════════════════════════════════════════════════════════════ */
+var FB_IDT = 'https://identitytoolkit.googleapis.com/v1/accounts:';
+function _fbIdt(op, body) {
+    return fetch(FB_IDT + op + '?key=' + FB_CONFIG.apiKey, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function(r){ return r.json(); });
+}
+/* Le compte de connexion existe-t-il encore ? true / false / null (indéterminé) */
+function _fbAccountExists(email) {
+    return _fbIdt('createAuthUri', { identifier: email, continueUri: 'http://localhost' }).then(function(j){
+        if (j && typeof j.registered === 'boolean') return j.registered;
+        // Protection contre l'énumération active : on teste la création, puis on annule aussitôt
+        var probe = 'Chk-' + Math.random().toString(36).slice(2) + 'X9!';
+        return _fbIdt('signUp', { email: email, password: probe, returnSecureToken: true }).then(function(s){
+            if (s && s.idToken) { return _fbIdt('delete', { idToken: s.idToken }).then(function(){ return false; }, function(){ return false; }); }
+            var m = (s && s.error && s.error.message) || '';
+            if (/EMAIL_EXISTS/.test(m)) return true;
+            return null;
+        });
+    }).catch(function(){ return null; });
+}
+/* La fiche en ligne (clients/{uid}) existe-t-elle encore ? (mise à jour sans effet, refusée si absente) */
+function _fbDocExists(uid) {
+    var app = _fbInit(); if (!app) return Promise.resolve(null);
+    return _fbStaffSignIn().then(function(){
+        return app.firestore().collection('clients').doc(uid).update({ _chk: firebase.firestore.FieldValue.delete() });
+    }).then(function(){ return true; }, function(err){
+        var code = (err && err.code) || '';
+        if (/not-found/.test(code)) return false;
+        if (/permission-denied/.test(code)) return false;   // la règle n'autorise le magasin qu'à MODIFIER une fiche existante
+        return null;
+    });
+}
+function _fbSetPortalState(clientId, state) {
+    var d = lg(); var i = d.customers.findIndex(function(x){ return x.id === clientId; }); if (i === -1) return;
+    var changed = d.customers[i].portalState !== state;
+    d.customers[i].portalState = state; d.customers[i].portalCheckedAt = Date.now(); ls(d);
+    if (changed && typeof refreshAll === 'function') { try { refreshAll(); } catch(e) {} }
+}
+window._fbCheckPortal = function(clientId, force) {
+    var c = find(clientId);
+    if (!c || !_fbInit()) return Promise.resolve(null);
+    if (!c.portalUid) { _ltyPortalChip(clientId); return Promise.resolve('none'); }
+    if (!force && c.portalCheckedAt && Date.now() - c.portalCheckedAt < 10 * 60000 && c.portalState) { _ltyPortalChip(clientId); return Promise.resolve(c.portalState); }
+    _ltyPortalChip(clientId, 'checking');
+    return _fbAccountExists(_fbClientEmail(c.barcode)).then(function(acc){
+        if (acc === false) return 'deleted-account';
+        return _fbDocExists(c.portalUid).then(function(doc){
+            if (doc === false) return 'deleted-doc';
+            if (acc === true && doc === true) return 'ok';
+            return c.portalState || 'unknown';
+        });
+    }).then(function(state){
+        _fbSetPortalState(clientId, state); _ltyPortalChip(clientId);
+        return state;
     });
 };
+/* Pastille d'état dans la fiche client */
+function _pcEsc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g, function(ch){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]; }); }
+function _ltyPortalChip(clientId, override) {
+    var el = document.getElementById('lty-portal-chip'); if (!el || (window._ltyState || {}).detailId !== clientId) return;
+    var c = find(clientId); if (!c) return;
+    var st = override || (c.portalUid ? (c.portalState || 'unknown') : 'none');
+    var btn = function(label, color){ return ' <button onclick="window.ltyPortalRepair(\''+_pcEsc(clientId)+'\')" style="margin-left:6px;background:'+color+';color:#fff;border:none;border-radius:7px;padding:3px 9px;font-size:.7rem;font-weight:800;cursor:pointer;">'+label+'</button>'; };
+    var M = {
+        checking:          ['rgba(100,116,139,.13)', '#475569', '⏳ Vérification de l\'accès en ligne…', ''],
+        ok:                ['rgba(5,150,105,.13)', '#059669', '🌐 Accès en ligne actif', ''],
+        unknown:           ['rgba(100,116,139,.13)', '#475569', '🌐 Accès en ligne (état non vérifié)', ''],
+        none:              ['rgba(37,99,235,.10)', '#2563eb', '🌐 Pas encore d\'accès en ligne', btn('Créer l\'accès', '#2563eb')],
+        'deleted-account': ['rgba(220,38,38,.12)', '#dc2626', '⚠️ Compte supprimé de Firebase', btn('🔁 Recréer l\'accès', '#dc2626')],
+        'deleted-doc':     ['rgba(217,119,6,.13)', '#b45309', '⚠️ Fiche en ligne supprimée de Firebase', btn('🔁 Restaurer la fiche', '#d97706')]
+    };
+    var m = M[st] || M.unknown;
+    el.innerHTML = '<span style="display:inline-flex;align-items:center;gap:4px;margin-top:7px;margin-left:6px;background:'+m[0]+';color:'+m[1]+';padding:4px 10px;border-radius:20px;font-weight:800;font-size:.72rem;">'+m[2]
+        + (st === 'ok' || st === 'unknown' ? ' <button onclick="window._fbCheckPortal(\''+_pcEsc(clientId)+'\', true)" title="Vérifier maintenant" style="background:none;border:none;color:inherit;cursor:pointer;font-size:.8rem;padding:0 0 0 4px;">↻</button>' : '')
+        + '</span>' + m[3];
+}
+/* Recrée / restaure l'accès en ligne du client */
+window.ltyPortalRepair = function(clientId) {
+    var c = find(clientId); if (!c) return;
+    var modal = document.getElementById('lty-portal-modal'), content = document.getElementById('lty-portal-content');
+    if (!modal || !content) return;
+    modal.classList.add('open');
+    content.innerHTML = '<div style="text-align:center;padding:24px 10px;"><div style="font-size:1.8rem;">⏳</div><div style="margin-top:8px;color:var(--text-muted);font-size:.85rem;">Vérification puis réparation de l\'accès en ligne…</div></div>';
+    if (!_fbInit()) { content.innerHTML = _fbPortalErrorHtml(_fbErrTitle({code:'not-configured'}), _fbErrDetail({code:'not-configured'})); return; }
+    window._fbCheckPortal(clientId, true).then(function(state){
+        if (state === 'deleted-doc') return _fbRestoreDoc(clientId);
+        if (state === 'deleted-account' || state === 'none') {
+            // Ancien identifiant inutilisable : on repart de zéro (nouveau compte + nouveau mot de passe)
+            var d = lg(); var i = d.customers.findIndex(function(x){ return x.id === clientId; });
+            if (i !== -1) { delete d.customers[i].portalUid; delete d.customers[i].portalPassword; ls(d); }
+            return window._fbEnsureClientPortal(clientId);
+        }
+        return window._fbEnsureClientPortal(clientId);   // accès présent : simple resynchronisation
+    }).then(function(res){
+        _fbSetPortalState(clientId, 'ok');
+        content.innerHTML = _fbPortalSuccessHtml(clientId, res.password);
+        toast(res.justCreated ? '🔁 Accès en ligne recréé — transmettez le nouveau mot de passe au client' : '✅ Accès en ligne rétabli', 'success');
+        refreshAll(); ltySelectClient(clientId, true);
+    }).catch(function(err){
+        console.error('[Portail] Réparation de l\'accès', err);
+        var e = err && err.err;
+        if (e && e.code === 'auth/email-already-in-use') {
+            content.innerHTML = _fbPortalErrorHtml('❌ Compte encore présent dans Firebase',
+                'Le compte de connexion de ce client existe encore dans Firebase, mais avec un mot de passe inconnu de Fidélité Pro. Dans la console Firebase, ouvrez Authentication, supprimez l\'utilisateur ' + _fbClientEmail(c.barcode) + ', puis cliquez à nouveau sur « Recréer l\'accès ».');
+            return;
+        }
+        if (err && err.code === 'restore-failed') {
+            content.innerHTML = _fbPortalErrorHtml('❌ Fiche impossible à restaurer',
+                'Le mot de passe enregistré ne permet plus de se connecter à ce compte. Dans la console Firebase, ouvrez Authentication, supprimez l\'utilisateur ' + _fbClientEmail(c.barcode) + ', puis cliquez sur « Recréer l\'accès » : un nouveau mot de passe sera généré.');
+            _fbSetPortalState(clientId, 'deleted-account'); _ltyPortalChip(clientId);
+            return;
+        }
+        content.innerHTML = _fbPortalErrorHtml(_fbErrTitle(err), _fbErrDetail(err));
+    });
+};
+/* Fiche Firestore supprimée mais compte intact : on se connecte en tant que client
+   (mot de passe connu) pour recréer sa fiche — le magasin n'a pas le droit de la créer. */
+function _fbRestoreDoc(clientId) {
+    var c = find(clientId);
+    if (!c || !c.portalPassword) return Promise.reject({ code: 'restore-failed' });
+    var sec;
+    try { sec = firebase.initializeApp(FB_CONFIG, 'covoPortalRestore-' + Date.now()); } catch(e) { return Promise.reject({ code: 'init-failed', err: e }); }
+    return sec.auth().signInWithEmailAndPassword(_fbClientEmail(c.barcode), c.portalPassword).then(function(cred){
+        var uid = cred.user.uid;
+        return sec.firestore().collection('clients').doc(uid).set(_fbClientPayload(find(clientId))).then(function(){
+            var d = lg(); var i = d.customers.findIndex(function(x){ return x.id === clientId; });
+            if (i !== -1) { d.customers[i].portalUid = uid; ls(d); }
+            return { uid: uid, password: c.portalPassword, justCreated: false };
+        });
+    }, function(){ throw { code: 'restore-failed' }; }).finally(function(){
+        sec.auth().signOut().catch(function(){});
+        setTimeout(function(){ sec.delete().catch(function(){}); }, 1000);
+    });
+}
+/* Vérifie tous les clients ayant un accès en ligne (Réglages) */
+window.ltyPortalCheckAll = function() {
+    var list = lg().customers.filter(function(c){ return c.portalUid; });
+    if (!list.length) { toast('Aucun client avec un accès en ligne'); return; }
+    if (!_fbInit()) { toast('⚠️ Portail non configuré'); return; }
+    var btn = document.getElementById('lset-portal-check'); if (btn) { btn.disabled = true; btn.textContent = '⏳ Vérification… 0/' + list.length; }
+    var i = 0, bad = [];
+    (function next(){
+        if (i >= list.length) {
+            if (btn) { btn.disabled = false; btn.textContent = '🔎 Vérifier les accès en ligne'; }
+            toast(bad.length ? '⚠️ ' + bad.length + ' accès supprimé(s) de Firebase : ' + bad.slice(0, 4).join(', ') + (bad.length > 4 ? '…' : '') + ' — ouvrez la fiche pour recréer l\'accès' : '✅ Les ' + list.length + ' accès en ligne sont en place', bad.length ? 'error' : 'success');
+            refreshAll(); return;
+        }
+        var c = list[i++];
+        window._fbCheckPortal(c.id, true).then(function(st){
+            if (st === 'deleted-account' || st === 'deleted-doc') bad.push(c.name);
+            if (btn) btn.textContent = '⏳ Vérification… ' + i + '/' + list.length;
+        }).then(function(){ setTimeout(next, 250); });
+    })();
+};
+
 
 /* ── Modale « Accès portail client » ─────────────────────────────────────
    AMÉLIORATION (demande : pouvoir visualiser le code/mot de passe du client,
