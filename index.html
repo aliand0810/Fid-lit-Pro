@@ -1979,7 +1979,9 @@ window.ltySelectClient = function(id, silent){
     var c = find(id); if(!c) return;
     document.getElementById('lty-detail-empty').style.display = 'none';
     document.getElementById('lty-detail-view').style.display = 'flex';
-    if (!silent && isNewClient) STATE.detTab = 'stats';
+    // Client avec réservation(s) ou message non lu : ouverture directe sur l'Aperçu (réservations + échanges)
+    var _toApercu = !silent && isNewClient && (((c.reservations||[]).length > 0) || (c.msgUnread > 0));
+    if (!silent && isNewClient) STATE.detTab = _toApercu ? 'apercu' : 'stats';
     renderCockpit(c);
     if (typeof _ltyPortalChip === 'function') setTimeout(function(){ _ltyPortalChip(id); }, 0);
     // Portail client (Firebase) — une fiche ouverte = un code client "saisi" : créer son
@@ -1993,6 +1995,15 @@ window.ltySelectClient = function(id, silent){
     renderEchelTab(c);
     renderHistTab(c);
     ltyShowDetTab(STATE.detTab||'stats');
+    if (_toApercu) setTimeout(function(){
+        var card = document.getElementById('lty-resv-card') || document.getElementById('lty-msg-thread');
+        if (!card) return;
+        card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        card.style.transition = 'box-shadow .4s'; card.style.boxShadow = '0 0 0 3px rgba(245,158,11,.55)';
+        setTimeout(function(){ card.style.boxShadow = ''; }, 1600);
+        var ta = document.getElementById('lty-msg-input');
+        if (ta && window.matchMedia && window.matchMedia('(hover: hover)').matches) ta.focus({ preventScroll: true });
+    }, 120);
 };
 
 /* ── Format quantité (kg vs unité), même convention que le reste de l'app ── */
@@ -2121,7 +2132,7 @@ function renderApercuTab(c){
     var grpWa = (avail.length>=2 && !c.noWhatsapp && phoneOk) ? '<button class="lty-btn small" style="background:#25D366;" onclick="ltyResvNotifyAll(\''+esc(c.id)+'\',\'wa\')">💬 Prévenir tout ('+avail.length+')</button>' : '';
     var grpSms = (avail.length>=2 && !c.noWhatsapp && phoneOk) ? '<button class="lty-btn small" style="background:#1565c0;" onclick="ltyResvNotifyAll(\''+esc(c.id)+'\',\'sms\')">📱 SMS tout ('+avail.length+')</button>' : '';
 
-    html += '<div class="lty-card">'
+    html += '<div class="lty-card" id="lty-resv-card">'
         + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:'+(resv.length?'8px':'0')+';">'
         + '<div class="lty-lbl" style="margin-bottom:0;color:#b45309;">📦 Réservations'+(resv.length?(' ('+resv.length+')'):'')+'</div>'
         + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'+(avail.filter(function(r){ return !r.preparedAt; }).length ? '<button class="lty-btn small" style="background:linear-gradient(135deg,#059669,#047857);" onclick="ltyResvPrepare(\''+esc(c.id)+'\',null)" title="Le panier du client est prêt : il est prévenu sur son compte (site web)">✅ Panier prêt ('+avail.filter(function(r){ return !r.preparedAt; }).length+')</button>' : '')+grpWa+grpSms+'<button class="lty-btn small" style="background:linear-gradient(135deg,#f59e0b,#d97706);" onclick="ltyOpenResv(\''+esc(c.id)+'\')">📦 Réserver un article</button></div>'
