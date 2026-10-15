@@ -1384,6 +1384,7 @@ function renderList(q){
         var resvBub = rDispo>0
             ? '<span class="lty-resv-bub" title="'+rDispo+' article(s) réservé(s) disponible(s) sur '+rTot+(hasPortal?' — dont réservations du portail':'')+'">'+rDispo+'/'+rTot+'</span>'
             : '';
+        var msgChip = c.msgUnread ? '<span class="lty-badge-chip" style="background:rgba(28,85,160,.14);color:#1c55a0;" title="Nouveau message du client">💬 '+c.msgUnread+'</span>' : '';
         var resvChip = (rTot && !rDispo) ? '<span class="lty-badge-chip" style="background:rgba(245,158,11,.15);color:#b45309;" title="Réservations en attente de stock">📦 0/'+rTot+'</span>' : '';
         var checkbox = _ltyMultiMode
             ? '<input type="checkbox" onclick="event.stopPropagation();window.ltyToggleMultiSelect(\''+esc(c.id)+'\',this.checked)" '+(_ltyMultiSelected[c.id]?'checked':'')+' style="width:17px;height:17px;flex-shrink:0;cursor:pointer;margin-right:2px;">'
@@ -1396,7 +1397,7 @@ function renderList(q){
             +'<div class="lty-row-meta">'
             +'<span class="lty-badge-chip" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);color:#fff;">⭐ '+(c.points||0)+'</span>'
             +creditChip
-            +resvChip
+            +resvChip+msgChip
             +catChip
             +'</div></div>';
     }).join('');
@@ -2119,7 +2120,7 @@ function renderApercuTab(c){
     html += '<div class="lty-card">'
         + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:'+(resv.length?'8px':'0')+';">'
         + '<div class="lty-lbl" style="margin-bottom:0;color:#b45309;">📦 Réservations'+(resv.length?(' ('+resv.length+')'):'')+'</div>'
-        + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'+grpWa+grpSms+'<button class="lty-btn small" style="background:linear-gradient(135deg,#f59e0b,#d97706);" onclick="ltyOpenResv(\''+esc(c.id)+'\')">📦 Réserver un article</button></div>'
+        + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'+(avail.filter(function(r){ return !r.preparedAt; }).length ? '<button class="lty-btn small" style="background:linear-gradient(135deg,#059669,#047857);" onclick="ltyResvPrepare(\''+esc(c.id)+'\',null)" title="Le panier du client est prêt : il est prévenu sur son compte (site web)">✅ Panier prêt ('+avail.filter(function(r){ return !r.preparedAt; }).length+')</button>' : '')+grpWa+grpSms+'<button class="lty-btn small" style="background:linear-gradient(135deg,#f59e0b,#d97706);" onclick="ltyOpenResv(\''+esc(c.id)+'\')">📦 Réserver un article</button></div>'
         + '</div>';
     if (!resv.length){
         html += '<div style="font-size:.8rem;color:var(--text-muted);">Aucune réservation.</div>';
@@ -2131,20 +2132,81 @@ function renderApercuTab(c){
             var statut = (r.pending && !av) ? '<span style="color:#b45309;font-weight:800;"> · ⏳ en attente de stock</span>' : ((r.pending && av) ? '<span style="color:#059669;font-weight:800;"> · ✅ disponible</span>' : '');
             if (r.source === 'portail') statut += ' <span style="background:rgba(37,99,235,.12);color:#2563eb;padding:1px 7px;border-radius:10px;font-weight:800;font-size:.62rem;">🌐 Portail</span>';
             if (r.pickupDate) statut += ' <span style="background:rgba(245,158,11,.15);color:#b45309;padding:1px 7px;border-radius:10px;font-weight:800;font-size:.62rem;">📅 retrait '+fmtD(r.pickupDate)+'</span>';
+            if (r.preparedAt) statut += ' <span style="background:rgba(5,150,105,.14);color:#059669;padding:1px 7px;border-radius:10px;font-weight:800;font-size:.62rem;" title="Mis à disposition le '+esc(fmtD(r.preparedAt))+'">✅ Prêt · '+esc(r.preparedBy||'caisse')+'</span>';
+            var prepBtn = (av && !r.preparedAt) ? '<button class="lty-btn small" style="background:rgba(5,150,105,.15);color:#059669;" onclick="ltyResvPrepare(\''+esc(c.id)+'\','+r.id+')" title="Mettre à disposition : le client est prévenu sur son compte">📦✅</button>' : '';
             var waBtn = (av && !c.noWhatsapp) ? '<button class="lty-btn small" style="background:#25D366;" onclick="ltyResvNotify(\''+esc(c.id)+'\','+r.id+',\'wa\')">💬</button>' : '';
             var smsBtn = (av && !c.noWhatsapp) ? '<button class="lty-btn small" style="background:#1565c0;" onclick="ltyResvNotify(\''+esc(c.id)+'\','+r.id+',\'sms\')">📱</button>' : '';
             return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px dashed var(--border-color);">'
                 + '<div style="flex:1;min-width:0;"><div style="font-weight:700;font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(r.productName)+'</div>'
                 + '<div style="font-size:.68rem;color:var(--text-muted);">'+unit+' · '+dt+statut+'</div></div>'
-                + waBtn + smsBtn
+                + prepBtn + waBtn + smsBtn
                 + '<button class="lty-btn small" style="background:rgba(5,150,105,.15);color:#059669;" onclick="ltyResvComplete(\''+esc(c.id)+'\','+r.id+')" title="Récupéré">✔️</button>'
                 + '<button class="lty-btn small" style="background:rgba(239,68,68,.12);color:#dc2626;" onclick="ltyResvCancel(\''+esc(c.id)+'\','+r.id+')" title="Annuler">✕</button>'
                 + '</div>';
         }).join('');
     }
     html += '</div>';
+    html += _ltyMsgCard(c);
     el.innerHTML = html;
+    if (c.msgUnread) { var dm = lg(); var im = dm.customers.findIndex(function(x){ return x.id===c.id; }); if (im!==-1) { dm.customers[im].msgUnread = 0; ls(dm); } }
+    var th = document.getElementById('lty-msg-thread'); if (th) th.scrollTop = th.scrollHeight;
 }
+
+/* ════════════════════════════════════════════════════════════
+   ÉCHANGES MAGASIN ⇄ CLIENT + PANIER MIS À DISPOSITION
+   Le caissier connecté (son nom et son identifiant) signe chaque message.
+   Le client lit et répond depuis « Mon compte » sur le site web.
+   ════════════════════════════════════════════════════════════ */
+function _ltyCashier(){ var u = null; try { u = _covoCurrentUser(); } catch(e) {} return { name: (u && (u.name || u.username)) || 'Caisse', id: (u && (u.username || u.id)) || '' }; }
+function _ltyMsgCard(c){
+    var msgs = (c.messages||[]).slice(-30);
+    var portal = !!c.portalUid;
+    var h = '<div class="lty-card"><div class="lty-lbl" style="color:#1c55a0;">💬 Échanges avec le client'+(msgs.length?' ('+(c.messages||[]).length+')':'')+'</div>';
+    if (!portal) h += '<div style="font-size:.74rem;color:var(--text-muted);margin-bottom:6px;">Ce client n\'a pas encore d\'accès en ligne : créez son accès portail pour qu\'il reçoive les messages sur son compte.</div>';
+    h += '<div id="lty-msg-thread" style="max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:4px 0 8px;">';
+    if (!msgs.length) h += '<div style="font-size:.78rem;color:var(--text-muted);">Aucun message pour le moment.</div>';
+    msgs.forEach(function(m){
+        var me = m.from !== 'client';
+        h += '<div style="align-self:'+(me?'flex-end':'flex-start')+';max-width:85%;background:'+(me?'rgba(28,85,160,.12)':'rgba(232,130,46,.12)')+';border-radius:12px;padding:7px 10px;">'
+          + '<div style="font-size:.8rem;white-space:pre-wrap;word-break:break-word;">'+esc(m.text)+'</div>'
+          + '<div style="font-size:.62rem;color:var(--text-muted);margin-top:3px;">'+(me?('🧑‍💼 '+esc(m.by||'Caisse')+(m.byId?' · ID '+esc(m.byId):'')):'👤 '+esc(c.name||'Client'))+' · '+esc(fmtD(m.at))+' '+esc(_ltyHm(m.at))+'</div></div>';
+    });
+    h += '</div><div style="display:flex;gap:6px;"><textarea class="lty-fld" id="lty-msg-input" rows="2" placeholder="Écrire au client…" style="resize:vertical;flex:1;"></textarea>'
+      + '<button class="lty-btn small" style="align-self:stretch;" onclick="ltyMsgSend(\''+esc(c.id)+'\')">Envoyer</button></div></div>';
+    return h;
+}
+function _ltyHm(iso){ var d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
+function _ltyMsgPush(clientId, text){
+    var d = lg(); var idx = d.customers.findIndex(function(x){ return x.id===clientId; }); if (idx===-1) return false;
+    var cs = _ltyCashier();
+    if (!Array.isArray(d.customers[idx].messages)) d.customers[idx].messages = [];
+    d.customers[idx].messages.push({ id: 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), from: 'shop', at: new Date().toISOString(), text: text, by: cs.name, byId: cs.id });
+    if (d.customers[idx].messages.length > 200) d.customers[idx].messages = d.customers[idx].messages.slice(-200);
+    ls(d);
+    return true;
+}
+window.ltyMsgSend = function(clientId){
+    var ta = document.getElementById('lty-msg-input'); var txt = ta ? ta.value.trim() : '';
+    if (!txt) return;
+    if (!_ltyMsgPush(clientId, txt)) return;
+    _fbResvPushClient(clientId);
+    toast('💬 Message envoyé au client', 'success');
+    refreshAll(); ltySelectClient(clientId);
+};
+/* Panier mis à disposition : une réservation (resvId) ou toutes celles disponibles (resvId = null) */
+window.ltyResvPrepare = function(clientId, resvId){
+    var d = lg(); var idx = d.customers.findIndex(function(x){ return x.id===clientId; }); if (idx===-1) return;
+    var c = d.customers[idx], cs = _ltyCashier(), now = new Date().toISOString();
+    var list = (c.reservations||[]).filter(function(r){ return resvAvail(r) && !r.preparedAt && (resvId == null || String(r.id) === String(resvId)); });
+    if (!list.length) { toast('Aucun article disponible à mettre à disposition'); return; }
+    list.forEach(function(r){ r.preparedAt = now; r.preparedBy = cs.name; r.preparedById = cs.id; });
+    ls(d);
+    var lignes = list.map(function(r){ return '• ' + r.productName + ' (' + (r.unitType==='kg' ? r.qty + ' kg' : '×' + r.qty) + ')'; }).join('\n');
+    _ltyMsgPush(clientId, (list.length > 1 ? 'Votre panier est prêt ! Ces articles vous attendent en magasin :\n' : 'Votre article est prêt ! Il vous attend en magasin :\n') + lignes);
+    _fbResvPushClient(clientId);
+    toast('✅ ' + (list.length > 1 ? list.length + ' articles mis à disposition' : 'Article mis à disposition') + ' — client prévenu sur son compte', 'success');
+    refreshAll(); ltySelectClient(clientId);
+};
 
 window.ltyNoteEdit = function(){
     var disp=document.getElementById('lty-note-display'), ed=document.getElementById('lty-note-editor'), btn=document.getElementById('lty-note-edit-btn');
@@ -3724,7 +3786,7 @@ window.fbImportPortalReservations = function(manual) {
     return _fbStaffSignIn().then(function() {
         return app.firestore().collection('reservations').get();
     }).then(function(snap) {
-        var d = lg(), added = 0, cancelled = 0, updated = 0, touched = {}, names = [], nDocs = 0, nItems = 0, unknown = [];
+        var d = lg(), added = 0, cancelled = 0, updated = 0, touched = {}, names = [], nDocs = 0, nItems = 0, unknown = [], newMsgs = 0, msgNames = [];
         snap.forEach(function(doc) {
             var data = doc.data() || {}, uid = doc.id;
             nDocs++; nItems += (Array.isArray(data.items) ? data.items.length : 0);
@@ -3786,10 +3848,25 @@ window.fbImportPortalReservations = function(manual) {
                 return false;
             });
             if (c.portalResvKeys.length > 400) c.portalResvKeys = c.portalResvKeys.slice(-400);
+            // Messages du client
+            var msgs = Array.isArray(data.messages) ? data.messages : [];
+            if (msgs.length) {
+                if (!Array.isArray(c.messages)) c.messages = [];
+                var have = {}; c.messages.forEach(function(m){ have[String(m.id)] = 1; });
+                msgs.forEach(function(m){
+                    if (!m || !m.id || m.from !== 'client' || have[String(m.id)]) return;
+                    c.messages.push({ id: String(m.id), from: 'client', at: m.at || new Date().toISOString(), text: String(m.text || '').slice(0, 1000) });
+                    c.msgUnread = (c.msgUnread || 0) + 1; newMsgs++; touched[c.id] = 1;
+                    if (msgNames.indexOf(c.name) === -1) msgNames.push(c.name);
+                });
+                c.messages.sort(function(a, b){ return String(a.at).localeCompare(String(b.at)); });
+                if (c.messages.length > 200) c.messages = c.messages.slice(-200);
+            }
         });
-        if (added || cancelled || updated) ls(d);
+        if (added || cancelled || updated || newMsgs) ls(d);
+        if (newMsgs) toast('💬 ' + newMsgs + ' nouveau' + (newMsgs > 1 ? 'x' : '') + ' message' + (newMsgs > 1 ? 's' : '') + ' de ' + msgNames.slice(0, 3).join(', '), 'success');
         Object.keys(touched).forEach(_fbResvPushClient);   // le portail du client voit le nouveau statut
-        if (added || cancelled || updated) refreshAll();
+        if (added || cancelled || updated || newMsgs) refreshAll();
         if (added) {
             _fbResvNewCount += added; _fbResvBadge();
             toast('📥 ' + added + ' nouvelle' + (added > 1 ? 's' : '') + ' réservation' + (added > 1 ? 's' : '') + ' du portail · ' + names.slice(0, 3).join(', ') + (names.length > 3 ? '…' : ''), 'success');
@@ -3857,8 +3934,17 @@ function _fbClientPayload(c) {
         });
     });
     echeances.sort(function(a,b){ return new Date(a.due)-new Date(b.due); });
-    var history = (c.history||[]).slice(0,30).map(function(h){
-        return { date: h.date||null, type: h.type||'', amount: +(h.amount||0), points: h.points||0, label: (typeof histLabel==='function') ? histLabel(h.type) : (h.type||'Opération') };
+    var history = (c.history||[]).slice(0,60).map(function(h){
+        var o = { date: h.date||null, type: h.type||'', amount: +(h.amount||0), points: h.points||0, label: (typeof histLabel==='function') ? histLabel(h.type) : (h.type||'Opération') };
+        if (h.ticketNum || h.saleId) o.ticket = String(h.ticketNum || h.saleId);
+        if (h.method) o.payment = String(h.method);
+        if (h.cashier) o.cashier = String(h.cashier);
+        if (h.note) o.note = String(h.note).slice(0, 120);
+        if (Array.isArray(h.items) && h.items.length) o.items = h.items.slice(0, 40).map(function(it){
+            var q = +(it.quantity || it.qty || 1) || 1, pr = +(it.price || 0) || 0;
+            return { name: String(it.name || 'Article').slice(0, 80), qty: q, unit: it.unitType === 'kg' ? 'kg' : 'u', price: +pr.toFixed(2), total: +(it.total != null ? +it.total : q * pr).toFixed(2) };
+        });
+        return o;
     });
     return {
         name: c.name||'',
@@ -3881,8 +3967,16 @@ function _fbClientPayload(c) {
                 status: resvAvail(r) ? 'ready' : 'waiting',
                 portalKey: r.portalKey || null,
                 pickupDate: r.pickupDate || '',
-                source: r.source || 'boutique'
+                source: r.source || 'boutique',
+                prepared: !!r.preparedAt,
+                preparedAt: r.preparedAt || '',
+                preparedBy: r.preparedBy || '',
+                preparedById: r.preparedById || ''
             };
+        }),
+        // Échanges magasin ⇄ client (les 60 derniers messages)
+        messages: (c.messages||[]).slice(-60).map(function(m){
+            return { id: String(m.id), from: m.from === 'client' ? 'client' : 'shop', at: m.at || '', text: String(m.text || '').slice(0, 1000), by: m.by || '', byId: m.byId || '' };
         }),
         updatedAt: new Date().toISOString()
     };
