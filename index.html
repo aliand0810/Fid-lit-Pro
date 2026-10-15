@@ -1996,12 +1996,12 @@ window.ltySelectClient = function(id, silent){
     renderHistTab(c);
     ltyShowDetTab(STATE.detTab||'stats');
     if (_toApercu) setTimeout(function(){
-        var card = document.getElementById('lty-resv-card') || document.getElementById('lty-msg-thread');
+        var card = document.getElementById('lty-resv-card') || document.getElementById('lty-msg-card');
         if (!card) return;
         card.scrollIntoView({ behavior: 'smooth', block: 'start' });
         card.style.transition = 'box-shadow .4s'; card.style.boxShadow = '0 0 0 3px rgba(245,158,11,.55)';
         setTimeout(function(){ card.style.boxShadow = ''; }, 1600);
-        var ta = document.getElementById('lty-msg-input');
+        var ta = document.getElementById('lty-msg-in-0');
         if (ta && window.matchMedia && window.matchMedia('(hover: hover)').matches) ta.focus({ preventScroll: true });
     }, 120);
 };
@@ -2164,7 +2164,7 @@ function renderApercuTab(c){
     html += _ltyMsgCard(c);
     el.innerHTML = html;
     if (c.msgUnread) { var dm = lg(); var im = dm.customers.findIndex(function(x){ return x.id===c.id; }); if (im!==-1) { dm.customers[im].msgUnread = 0; ls(dm); } }
-    var th = document.getElementById('lty-msg-thread'); if (th) th.scrollTop = th.scrollHeight;
+    Array.prototype.forEach.call(document.querySelectorAll('.lty-bk-thread'), function(th){ th.scrollTop = th.scrollHeight; });
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -2173,51 +2173,83 @@ function renderApercuTab(c){
    Le client lit et répond depuis « Mon compte » sur le site web.
    ════════════════════════════════════════════════════════════ */
 function _ltyCashier(){ var u = null; try { u = _covoCurrentUser(); } catch(e) {} return { name: (u && (u.name || u.username)) || 'Caisse', id: (u && (u.username || u.id)) || '' }; }
-function _ltyMsgCard(c){
-    var msgs = (c.messages||[]).slice(-30);
-    var portal = !!c.portalUid;
-    var h = '<div class="lty-card"><div class="lty-lbl" style="color:#1c55a0;">💬 Échanges avec le client'+(msgs.length?' ('+(c.messages||[]).length+')':'')+'</div>';
-    if (!portal) h += '<div style="font-size:.74rem;color:var(--text-muted);margin-bottom:6px;">Ce client n\'a pas encore d\'accès en ligne : créez son accès portail pour qu\'il reçoive les messages sur son compte.</div>';
-    h += '<div id="lty-msg-thread" style="max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:4px 0 8px;">';
-    if (!msgs.length) h += '<div style="font-size:.78rem;color:var(--text-muted);">Aucun message pour le moment.</div>';
-    msgs.forEach(function(m){
-        var me = m.from !== 'client';
-        h += '<div style="align-self:'+(me?'flex-end':'flex-start')+';max-width:85%;background:'+(me?'rgba(28,85,160,.12)':'rgba(232,130,46,.12)')+';border-radius:12px;padding:7px 10px;">'
-          + '<div style="font-size:.8rem;white-space:pre-wrap;word-break:break-word;">'+esc(m.text)+'</div>'
-          + '<div style="font-size:.62rem;color:var(--text-muted);margin-top:3px;">'+(me?('🧑‍💼 '+esc(m.by||'Caisse')+(m.byId?' · ID '+esc(m.byId):'')):'👤 '+esc(c.name||'Client'))+' · '+esc(fmtD(m.at))+' '+esc(_ltyHm(m.at))+'</div></div>';
+/* Un panier = les articles réservés ensemble (même identifiant de panier ; à défaut, même jour).
+   Chaque panier a son propre fil d'échanges ; il se ferme quand le panier est récupéré ou annulé. */
+function _ltyBk(r){ return r.basketId || ('d' + String(r.date || '').slice(0, 10)); }
+window._ltyBk = _ltyBk;
+function _ltyBaskets(c){
+    var map = {}, order = [];
+    (c.reservations || []).forEach(function(r){
+        var k = _ltyBk(r);
+        if (!map[k]) { map[k] = { bk: k, items: [], msgs: [], first: r.date || '' }; order.push(k); }
+        map[k].items.push(r);
+        if (r.date && (!map[k].first || r.date < map[k].first)) map[k].first = r.date;
     });
-    h += '</div><div style="display:flex;gap:6px;"><textarea class="lty-fld" id="lty-msg-input" rows="2" placeholder="Écrire au client…" style="resize:vertical;flex:1;"></textarea>'
-      + '<button class="lty-btn small" style="align-self:stretch;" onclick="ltyMsgSend(\''+esc(c.id)+'\')">Envoyer</button></div></div>';
-    return h;
+    (c.messages || []).forEach(function(m){ if (m.bk && map[m.bk]) map[m.bk].msgs.push(m); });
+    return order.map(function(k){ return map[k]; }).sort(function(a, b){ return String(a.first).localeCompare(String(b.first)); });
+}
+function _ltyBkLabel(b){ var d = new Date(b.first); return 'Panier du ' + (isNaN(d) ? '—' : d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })); }
+function _ltyMsgCard(c){
+    var bks = _ltyBaskets(c), cid = esc(c.id);
+    var h = '<div class="lty-card" id="lty-msg-card"><div class="lty-lbl" style="color:#1c55a0;">💬 Échanges par panier de réservation'+(bks.length?' ('+bks.length+' panier'+(bks.length>1?'s':'')+')':'')+'</div>';
+    if (!c.portalUid) h += '<div style="font-size:.74rem;color:var(--text-muted);margin-bottom:6px;">Ce client n\'a pas encore d\'accès en ligne : créez son accès pour qu\'il reçoive les messages sur son compte.</div>';
+    if (!bks.length) return h + '<div style="font-size:.78rem;color:var(--text-muted);">Aucune réservation en cours. Un fil d\'échange s\'ouvre avec chaque panier réservé par le client.</div></div>';
+    bks.forEach(function(b, bi){
+        var ready = b.items.filter(function(r){ return resvAvail(r) && !r.preparedAt; });
+        var prep = b.items.filter(function(r){ return r.preparedAt; });
+        var allPrep = prep.length === b.items.length;
+        var nArt = b.items.reduce(function(a, r){ return a + (r.unitType === 'kg' ? 1 : (+r.qty || 1)); }, 0);
+        var st = allPrep ? '<span style="color:#059669;">✅ Prêt · '+esc(prep[0].preparedBy || 'caisse')+'</span>' : (ready.length ? '<span style="color:#1c55a0;">'+ready.length+' disponible'+(ready.length>1?'s':'')+'</span>' : '<span style="color:#b45309;">⏳ en attente de stock</span>');
+        h += '<div style="border:1px solid rgba(28,85,160,.22);border-radius:12px;padding:9px 11px;margin-top:8px;background:rgba(28,85,160,.035);">'
+          + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">'
+          + '<div style="font-weight:800;font-size:.84rem;">🧺 '+esc(_ltyBkLabel(b))+' <span style="font-weight:600;font-size:.72rem;color:var(--text-muted);">· '+nArt+' article'+(nArt>1?'s':'')+' · </span><span style="font-size:.72rem;">'+st+'</span></div>'
+          + (ready.length ? '<button class="lty-btn small" style="background:linear-gradient(135deg,#059669,#047857);" onclick="ltyResvPrepare(\''+cid+'\',null,\''+esc(b.bk)+'\')">✅ Mettre ce panier à disposition</button>' : '')
+          + '</div>'
+          + '<div style="font-size:.72rem;color:var(--text-muted);margin:4px 0 6px;">'+b.items.map(function(r){ return esc(r.productName)+' '+(r.unitType==='kg'?r.qty+' kg':'×'+r.qty); }).join(' · ')+'</div>'
+          + '<div class="lty-bk-thread" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:2px 0 8px;">';
+        if (!b.msgs.length) h += '<div style="font-size:.74rem;color:var(--text-muted);">Aucun message pour ce panier.</div>';
+        b.msgs.slice(-30).forEach(function(m){
+            var me = m.from !== 'client';
+            h += '<div style="align-self:'+(me?'flex-end':'flex-start')+';max-width:85%;background:'+(me?'rgba(28,85,160,.12)':'rgba(232,130,46,.13)')+';border-radius:12px;padding:7px 10px;">'
+              + '<div style="font-size:.8rem;white-space:pre-wrap;word-break:break-word;">'+esc(m.text)+'</div>'
+              + '<div style="font-size:.62rem;color:var(--text-muted);margin-top:3px;">'+(me?('🧑‍💼 '+esc(m.by||'Caisse')+(m.byId?' · ID '+esc(m.byId):'')):'👤 '+esc(c.name||'Client'))+' · '+esc(fmtD(m.at))+' '+esc(_ltyHm(m.at))+'</div></div>';
+        });
+        h += '</div><div style="display:flex;gap:6px;"><textarea class="lty-fld" id="lty-msg-in-'+bi+'" rows="2" placeholder="Écrire au client à propos de ce panier…" style="resize:vertical;flex:1;"></textarea>'
+          + '<button class="lty-btn small" style="align-self:stretch;" onclick="ltyMsgSend(\''+cid+'\',\''+esc(b.bk)+'\','+bi+')">Envoyer</button></div></div>';
+    });
+    return h + '</div>';
 }
 function _ltyHm(iso){ var d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
-function _ltyMsgPush(clientId, text){
+function _ltyMsgPush(clientId, text, bk){
     var d = lg(); var idx = d.customers.findIndex(function(x){ return x.id===clientId; }); if (idx===-1) return false;
     var cs = _ltyCashier();
     if (!Array.isArray(d.customers[idx].messages)) d.customers[idx].messages = [];
-    d.customers[idx].messages.push({ id: 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), from: 'shop', at: new Date().toISOString(), text: text, by: cs.name, byId: cs.id });
+    d.customers[idx].messages.push({ id: 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), from: 'shop', at: new Date().toISOString(), text: text, by: cs.name, byId: cs.id, bk: bk || '' });
     if (d.customers[idx].messages.length > 200) d.customers[idx].messages = d.customers[idx].messages.slice(-200);
     ls(d);
     return true;
 }
-window.ltyMsgSend = function(clientId){
-    var ta = document.getElementById('lty-msg-input'); var txt = ta ? ta.value.trim() : '';
-    if (!txt) return;
-    if (!_ltyMsgPush(clientId, txt)) return;
+window.ltyMsgSend = function(clientId, bk, bi){
+    var ta = document.getElementById('lty-msg-in-' + bi); var txt = ta ? ta.value.trim() : '';
+    if (!txt || !bk) return;
+    if (!_ltyMsgPush(clientId, txt, bk)) return;
     _fbResvPushClient(clientId);
-    toast('💬 Message envoyé au client', 'success');
+    toast('💬 Message envoyé au client (panier)', 'success');
     refreshAll(); ltySelectClient(clientId);
 };
-/* Panier mis à disposition : une réservation (resvId) ou toutes celles disponibles (resvId = null) */
-window.ltyResvPrepare = function(clientId, resvId){
+/* Panier mis à disposition : une réservation (resvId), un panier (bk) ou tout ce qui est disponible */
+window.ltyResvPrepare = function(clientId, resvId, bk){
     var d = lg(); var idx = d.customers.findIndex(function(x){ return x.id===clientId; }); if (idx===-1) return;
     var c = d.customers[idx], cs = _ltyCashier(), now = new Date().toISOString();
-    var list = (c.reservations||[]).filter(function(r){ return resvAvail(r) && !r.preparedAt && (resvId == null || String(r.id) === String(resvId)); });
+    var list = (c.reservations||[]).filter(function(r){ return resvAvail(r) && !r.preparedAt && (resvId == null || String(r.id) === String(resvId)) && (!bk || _ltyBk(r) === bk); });
     if (!list.length) { toast('Aucun article disponible à mettre à disposition'); return; }
     list.forEach(function(r){ r.preparedAt = now; r.preparedBy = cs.name; r.preparedById = cs.id; });
     ls(d);
-    var lignes = list.map(function(r){ return '• ' + r.productName + ' (' + (r.unitType==='kg' ? r.qty + ' kg' : '×' + r.qty) + ')'; }).join('\n');
-    _ltyMsgPush(clientId, (list.length > 1 ? 'Votre panier est prêt ! Ces articles vous attendent en magasin :\n' : 'Votre article est prêt ! Il vous attend en magasin :\n') + lignes);
+    var groups = {}; list.forEach(function(r){ var k = _ltyBk(r); (groups[k] = groups[k] || []).push(r); });
+    Object.keys(groups).forEach(function(k){
+        var g = groups[k], lignes = g.map(function(r){ return '• ' + r.productName + ' (' + (r.unitType==='kg' ? r.qty + ' kg' : '×' + r.qty) + ')'; }).join('\n');
+        _ltyMsgPush(clientId, (g.length > 1 ? 'Votre panier est prêt ! Ces articles vous attendent en magasin :\n' : 'Votre article est prêt ! Il vous attend en magasin :\n') + lignes, k);
+    });
     _fbResvPushClient(clientId);
     toast('✅ ' + (list.length > 1 ? list.length + ' articles mis à disposition' : 'Article mis à disposition') + ' — client prévenu sur son compte', 'success');
     refreshAll(); ltySelectClient(clientId);
@@ -3822,6 +3854,7 @@ window.fbImportPortalReservations = function(manual) {
                 if (existing) {   // déjà importée : quantité / date de retrait modifiées par le client ?
                     var ch = false;
                     if ((existing.pickupDate || '') !== (it.want || '')) { existing.pickupDate = it.want || ''; ch = true; }
+                    if (it.bk && existing.basketId !== String(it.bk)) { existing.basketId = String(it.bk); ch = true; }
                     if (+existing.qty !== qty) {
                         var delta = qty - (+existing.qty || 0);
                         if (existing.decremented !== false) {
@@ -3850,7 +3883,8 @@ window.fbImportPortalReservations = function(manual) {
                     price: prod ? (+(isKg ? prod.pricePerKg : prod.price) || 0) : (+it.price || 0),
                     date: it.at ? new Date(it.at).toISOString() : new Date().toISOString(),
                     decremented: decremented, pending: pending, ready: false,
-                    source: 'portail', portalKey: key, pickupDate: it.want || ''
+                    source: 'portail', portalKey: key, pickupDate: it.want || '',
+                    basketId: it.bk ? String(it.bk) : ('d' + new Date(it.at || Date.now()).toISOString().slice(0, 10))
                 });
                 c.portalResvKeys.push(key);
                 added++; touched[c.id] = 1;
@@ -3871,7 +3905,7 @@ window.fbImportPortalReservations = function(manual) {
                 var have = {}; c.messages.forEach(function(m){ have[String(m.id)] = 1; });
                 msgs.forEach(function(m){
                     if (!m || !m.id || m.from !== 'client' || have[String(m.id)]) return;
-                    c.messages.push({ id: String(m.id), from: 'client', at: m.at || new Date().toISOString(), text: String(m.text || '').slice(0, 1000) });
+                    c.messages.push({ id: String(m.id), from: 'client', at: m.at || new Date().toISOString(), text: String(m.text || '').slice(0, 1000), bk: m.bk ? String(m.bk) : '' });
                     c.msgUnread = (c.msgUnread || 0) + 1; newMsgs++; touched[c.id] = 1;
                     if (msgNames.indexOf(c.name) === -1) msgNames.push(c.name);
                 });
@@ -3984,6 +4018,7 @@ function _fbClientPayload(c) {
                 portalKey: r.portalKey || null,
                 pickupDate: r.pickupDate || '',
                 source: r.source || 'boutique',
+                basketId: (typeof window._ltyBk === 'function') ? window._ltyBk(r) : (r.basketId || ''),
                 prepared: !!r.preparedAt,
                 preparedAt: r.preparedAt || '',
                 preparedBy: r.preparedBy || '',
@@ -3992,7 +4027,7 @@ function _fbClientPayload(c) {
         }),
         // Échanges magasin ⇄ client (les 60 derniers messages)
         messages: (c.messages||[]).slice(-60).map(function(m){
-            return { id: String(m.id), from: m.from === 'client' ? 'client' : 'shop', at: m.at || '', text: String(m.text || '').slice(0, 1000), by: m.by || '', byId: m.byId || '' };
+            return { id: String(m.id), from: m.from === 'client' ? 'client' : 'shop', at: m.at || '', text: String(m.text || '').slice(0, 1000), by: m.by || '', byId: m.byId || '', bk: m.bk || '' };
         }),
         updatedAt: new Date().toISOString()
     };
