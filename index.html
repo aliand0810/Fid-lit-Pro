@@ -4250,7 +4250,8 @@ window.fbSyncCatalogue = function() {
                 category: p.category || 'Général',
                 unitType: isKg ? 'kg' : 'unit',
                 price: +(isKg ? (p.pricePerKg || 0) : (p.price || 0)),
-                promo: +(p.promo || 0),
+                // % RÉEL (le portail calcule prix × (1 − promo/100)) : même prix promo qu'en caisse
+                promo: (function () { var b = +(isKg ? (p.pricePerKg || 0) : (p.price || 0)), pc = Math.max(0, Math.min(100, +(p.promo || 0))); if (!(pc > 0) || !(b > 0)) return pc; var c = parseFloat(p.costPrice), n = (!isNaN(c) && c >= 0 && c < b) ? b - pc / 100 * (b - c) : b * (1 - pc / 100); return n < b ? +((1 - n / b) * 100).toFixed(4) : 0; })(),
                 available: (+(p.stock || 0)) > 0,
                 img: img,
                 // Code-barres : indispensable au scanner d'articles du Portail fidélité
